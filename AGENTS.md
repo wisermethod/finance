@@ -54,6 +54,4 @@ This root's layout is governed by `wiser/standards/plugin-root.md`. That standar
 
 Stood up 2026-09-18 by `wiser/skills/Onboard Plugin Root/`. Each line is owed to a person and names what closes it. Strike a line when its boundary closes; when the last line goes, delete this section.
 
-- Repository, remote and visibility: owed (the operator; this directory is not under version control, and creating the repository, setting its remote and setting its visibility are a person's)
-- The first commit, and any push: owed (the operator; nothing here has been committed)
 - The archive of the placeholder this tree replaced: owed (the operator; the placeholder's `AGENTS.md` and `README.md` were copied outside this root before it was produced, and the stand-up report names exactly where. Nothing inside this root can reach them, so keeping or discarding them is a person's)
