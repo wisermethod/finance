@@ -1,6 +1,6 @@
 ---
 root: finance
-layout: 2
+layout: 1
 ---
 
 # Finance
