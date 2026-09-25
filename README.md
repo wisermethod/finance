@@ -7,3 +7,7 @@ A WISER plugin for finance work at a company of any kind: tax, accounting, ventu
 Point your harness at this repository as a plugin root, or add the repository as a marketplace and install `finance@wiser-method-finance` from its catalog.
 
 Work lands in the working folder you attach, never in this repository.
+
+## Support
+
+Email support@wisermemory.com.

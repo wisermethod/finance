@@ -2,6 +2,7 @@
   "name": "wiser-method-finance",
   "owner": {
     "name": "Wiser Memory",
+    "email": "support@wisermemory.com",
     "url": "https://wisermemory.com"
   },
   "description": "A WISER plugin for finance work at a company of any kind: tax, accounting, venture finance, and pro forma modelling. No skills or experts have been built yet; an expert bench for that work, with skills under each expert, is the first planned.",
