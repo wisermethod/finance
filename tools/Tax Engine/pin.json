@@ -1,0 +1,9 @@
+{
+  "packageName": "@invaro/opentax",
+  "packageVersion": "0.4.0",
+  "bundleSha256": "0975326041e325123a6b15015b0aadad3a8b9c3b884066130308a1616389de38",
+  "corpusName": "@invaro/opentax-corpus-us-federal",
+  "corpusVersion": "0.37.0",
+  "corpusMerkleRoot": "sha256:6c422520ead11760adc2090b94426f61030743205515627fbc749f14fb498c8a",
+  "nodeRecorded": "v25.1.0"
+}
