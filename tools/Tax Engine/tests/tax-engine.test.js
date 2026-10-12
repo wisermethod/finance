@@ -881,7 +881,9 @@ describe('tax engine', { concurrency: false }, () => {
       const calls = received(enginePath).calls.map((entry) => entry.params.arguments);
       const call = calls.find((item) => item.target === 'us.federal.estimated.quarterly_payment');
       assert.ok(call);
-      assert.ok(calls.some((item) => item.target === 'us.federal.estimated.safe_harbor_met'));
+      assert.ok(calls.some((item) => item.target === 'us.federal.balance_due'));
+      assert.ok(calls.some((item) => item.target === 'us.federal.estimated.required_annual_payment'));
+      assert.equal(calls.some((item) => item.target === 'us.federal.estimated.safe_harbor_met'), false);
       assert.equal(call.asOf, '2026-12-31');
       assert.equal(call.payments_estimates.isFarmerOrFisherman, false);
       assert.equal(call.payments_estimates.federalTaxWithheld, '0.00');
@@ -1608,138 +1610,80 @@ describe('tax engine', { concurrency: false }, () => {
     }
   });
 
-  test('safe harbor zeroes a required installment, and a broken check returns no figure', async () => {
+  test('section 6654(e)(1) from the engine balance and required payment, and a broken input returns no figure', async () => {
     const box = sandbox();
     try {
       installTree(box.toolDir);
       const pin = pinFor(BUNDLE_BYTES);
       const quarterly = 'us.federal.estimated.quarterly_payment';
-      const safeHarbor = 'us.federal.estimated.safe_harbor_met';
       const balanceDue = 'us.federal.balance_due';
       const requiredAnnual = 'us.federal.estimated.required_annual_payment';
-
-      const metEngine = placeStub(box.root, {
+      const engine = (installmentCents, balanceCents, requiredCents, extra = {}) => placeStub(box.root, {
         mode: 'ok',
-        result: okResult(pin, { valueCents: '9630', target: quarterly }),
+        result: okResult(pin, { valueCents: installmentCents, answer: 'DECOY', target: quarterly }),
         byTarget: {
-          [safeHarbor]: okResult(pin, { value: true, valueCents: '0', answer: 'yes', target: safeHarbor })
+          [balanceDue]: okResult(pin, { valueCents: balanceCents, answer: 'DECOY', target: balanceDue, ...(extra.balance || {}) }),
+          [requiredAnnual]: okResult(pin, { valueCents: requiredCents, answer: 'DECOY', target: requiredAnnual })
         }
       });
-      const metFacts = writeFacts(box.root, estimateFacts());
-      const met = await run(box, ['compute', '--facts', metFacts], { pin, options: { enginePath: metEngine } });
-      assert.equal(met.result.exitCode, 0, met.result.stderr);
-      const metBody = JSON.parse(met.result.stdout);
-      assert.equal(metBody.figure.valueCents, '0');
-      assert.equal(metBody.figure.dollars, '$0.00');
-      assert.equal(metBody.figure.label, 'No required quarterly estimated payment under 26 U.S.C. § 6654(e)');
-      assert.equal(metBody.estimateDetail.determination, true);
-      assert.equal(metBody.estimateDetail.fourRequiredInstallments, false);
-      assert.equal(metBody.estimateDetail.regularMethodInstallment.valueCents, '9630');
-      assert.equal(metBody.estimateDetail.regularMethodInstallment.dollars, '$96.30');
+      const facts = writeFacts(box.root, estimateFacts());
 
-      const unmetEngine = placeStub(box.root, {
-        mode: 'ok',
-        result: okResult(pin, { valueCents: '250000', target: quarterly }),
-        byTarget: {
-          [safeHarbor]: okResult(pin, { value: false, valueCents: '0', answer: 'no', target: safeHarbor })
-        }
-      });
-      const unmet = await run(box, ['compute', '--facts', metFacts], { pin, options: { enginePath: unmetEngine } });
-      assert.equal(unmet.result.exitCode, 0, unmet.result.stderr);
-      const unmetBody = JSON.parse(unmet.result.stdout);
-      assert.equal(unmetBody.figure.valueCents, '250000');
-      assert.equal(unmetBody.figure.label, 'Required quarterly estimated payment by the regular installment method');
-      assert.equal(unmetBody.estimateDetail.determination, false);
-      assert.equal(unmetBody.estimateDetail.regularMethodInstallment.valueCents, '250000');
-
-      const below = placeStub(box.root, {
-        mode: 'ok',
-        result: okResult(pin, { valueCents: '9630', answer: '$96.30', target: quarterly }),
-        byTarget: {
-          [safeHarbor]: okResult(pin, { valueCents: '0', answer: '$0.00', target: safeHarbor }),
-          [balanceDue]: okResult(pin, { valueCents: '42800', answer: '$428.00', target: balanceDue }),
-          [requiredAnnual]: okResult(pin, { valueCents: '1000000', answer: '$10,000.00', target: requiredAnnual })
-        }
-      });
-      const belowRun = await run(box, ['compute', '--facts', metFacts], { pin, options: { enginePath: below } });
-      assert.equal(belowRun.result.exitCode, 0, belowRun.result.stderr);
-      const belowBody = JSON.parse(belowRun.result.stdout);
+      const below = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('9630', '42800', '1000000') } });
+      assert.equal(below.result.exitCode, 0, below.result.stderr);
+      const belowBody = JSON.parse(below.result.stdout);
       assert.equal(belowBody.figure.valueCents, '0');
+      assert.equal(belowBody.figure.dollars, '$0.00');
+      assert.equal(belowBody.figure.label, 'No required quarterly estimated payment under 26 U.S.C. § 6654(e)');
       assert.equal(belowBody.estimateDetail.determination, true);
+      assert.equal(belowBody.estimateDetail.fourRequiredInstallments, false);
       assert.equal(belowBody.estimateDetail.regularMethodInstallment.valueCents, '9630');
+      assert.equal(belowBody.estimateDetail.regularMethodInstallment.dollars, '$96.30');
 
-      const atLimit = placeStub(box.root, {
-        mode: 'ok',
-        result: okResult(pin, { valueCents: '25000', answer: '$250.00', target: quarterly }),
-        byTarget: {
-          [safeHarbor]: okResult(pin, { valueCents: '0', answer: '$0.00', target: safeHarbor }),
-          [balanceDue]: okResult(pin, { valueCents: '100000', answer: '$1,000.00', target: balanceDue }),
-          [requiredAnnual]: okResult(pin, { valueCents: '1000000', answer: '$10,000.00', target: requiredAnnual })
-        }
-      });
-      const atRun = await run(box, ['compute', '--facts', metFacts], { pin, options: { enginePath: atLimit } });
-      assert.equal(atRun.result.exitCode, 0, atRun.result.stderr);
-      const atBody = JSON.parse(atRun.result.stdout);
+      const refund = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('9630', '-50000', '1000000') } });
+      assert.equal(refund.result.exitCode, 0, refund.result.stderr);
+      assert.equal(JSON.parse(refund.result.stdout).estimateDetail.determination, true);
+
+      const atLimit = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('25000', '100000', '1000000') } });
+      assert.equal(atLimit.result.exitCode, 0, atLimit.result.stderr);
+      const atBody = JSON.parse(atLimit.result.stdout);
       assert.equal(atBody.figure.valueCents, '25000');
+      assert.equal(atBody.figure.label, 'Required quarterly estimated payment by the regular installment method');
       assert.equal(atBody.estimateDetail.determination, false);
+      assert.equal(atBody.estimateDetail.fourRequiredInstallments, true);
 
-      const covered = placeStub(box.root, {
-        mode: 'ok',
-        result: okResult(pin, { valueCents: '9630', answer: '$96.30', target: quarterly }),
-        byTarget: {
-          [safeHarbor]: okResult(pin, { valueCents: '0', answer: '$0.00', target: safeHarbor }),
-          [balanceDue]: okResult(pin, { valueCents: '200000', answer: '$2,000.00', target: balanceDue }),
-          [requiredAnnual]: okResult(pin, { valueCents: '5000', answer: '$50.00', target: requiredAnnual })
-        }
-      });
       const coveredFacts = writeFacts(box.root, estimateFacts({
         estimate: { ...estimateFacts().estimate, federalTaxWithheld: 50 }
       }));
-      const coveredRun = await run(box, ['compute', '--facts', coveredFacts], { pin, options: { enginePath: covered } });
-      assert.equal(coveredRun.result.exitCode, 0, coveredRun.result.stderr);
-      const coveredBody = JSON.parse(coveredRun.result.stdout);
+      const covered = await run(box, ['compute', '--facts', coveredFacts], { pin, options: { enginePath: engine('9630', '200000', '5000') } });
+      assert.equal(covered.result.exitCode, 0, covered.result.stderr);
+      const coveredBody = JSON.parse(covered.result.stdout);
       assert.equal(coveredBody.figure.valueCents, '0');
       assert.equal(coveredBody.estimateDetail.determination, true);
-      assert.equal(coveredBody.estimateDetail.regularMethodInstallment.valueCents, '9630');
 
-      const mutated = placeStub(box.root, {
-        mode: 'ok',
-        result: okResult(pin, { valueCents: '9630', answer: '$96.30 DECOY', target: quarterly }),
-        byTarget: {
-          [safeHarbor]: okResult(pin, {
-            value: true,
-            valueCents: '0',
-            answer: 'yes',
-            corpusMerkleRoot: BAD_ROOT,
-            target: safeHarbor
-          })
-        }
-      });
-      const mutatedRun = await run(box, ['compute', '--facts', metFacts], { pin, options: { enginePath: mutated } });
-      const mutatedBody = refusal(mutatedRun.result, 'PIN_ROOT');
-      assert.equal(mutatedBody.subject, 'corpusMerkleRoot');
-      assert.equal(mutatedRun.result.stdout, '');
-      assert.equal(mutatedRun.result.stderr.includes('9630'), false);
-      assert.equal(mutatedRun.result.stderr.includes('DECOY'), false);
+      const short = await run(box, ['compute', '--facts', coveredFacts], { pin, options: { enginePath: engine('9630', '200000', '5001') } });
+      assert.equal(short.result.exitCode, 0, short.result.stderr);
+      assert.equal(JSON.parse(short.result.stdout).estimateDetail.determination, false);
 
-      const wrongTarget = placeStub(box.root, {
-        mode: 'ok',
-        result: okResult(pin, { valueCents: '9630', answer: '$96.30 DECOY', target: quarterly }),
-        byTarget: {
-          [safeHarbor]: {
-            ...okResult(pin, { value: true, valueCents: '0', answer: 'yes DECOY' }),
-            target: 'us.federal.net_tax',
-            asOf: '2025-12-31',
-            forceIdentity: true
-          }
-        }
+      const badRoot = await run(box, ['compute', '--facts', facts], {
+        pin,
+        options: { enginePath: engine('9630', '42800', '1000000', { balance: { corpusMerkleRoot: BAD_ROOT } }) }
       });
-      const wrongRun = await run(box, ['compute', '--facts', metFacts], { pin, options: { enginePath: wrongTarget } });
-      const wrongBody = faultBody(wrongRun.result, 'RESULT_MISMATCH');
+      const badRootBody = refusal(badRoot.result, 'PIN_ROOT');
+      assert.equal(badRootBody.subject, 'corpusMerkleRoot');
+      assert.equal(badRoot.result.stderr.includes('9630'), false);
+      assert.equal(badRoot.result.stderr.includes('DECOY'), false);
+
+      const wrongTarget = await run(box, ['compute', '--facts', facts], {
+        pin,
+        options: { enginePath: engine('9630', '42800', '1000000', { balance: { target: 'us.federal.net_tax', asOf: '2025-12-31', forceIdentity: true } }) }
+      });
+      const wrongBody = faultBody(wrongTarget.result, 'RESULT_MISMATCH');
       assert.match(wrongBody.message, /us\.federal\.net_tax/);
-      assert.equal(wrongRun.result.stdout, '');
-      assert.equal(wrongRun.result.stderr.includes('9630'), false);
-      assert.equal(wrongRun.result.stderr.includes('DECOY'), false);
+      assert.equal(wrongTarget.result.stdout, '');
+      assert.equal(wrongTarget.result.stderr.includes('9630'), false);
+
+      const unreadable = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('9630', '12.5', '1000000') } });
+      faultBody(unreadable.result, 'ENGINE_UNREADABLE');
     } finally {
       box.cleanup();
     }

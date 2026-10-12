@@ -32,7 +32,6 @@ const SAFE_HARBOR_LABEL = 'No required quarterly estimated payment under 26 U.S.
 const UNREADABLE = 'The engine returned a response this tool could not read, so no figure is returned. Fix: confirm the installed engine is @invaro/opentax 0.4.0 and run the command again.';
 const NET_TAX_TARGET = 'us.federal.net_tax';
 const QUARTERLY_TARGET = 'us.federal.estimated.quarterly_payment';
-const SAFE_HARBOR_TARGET = 'us.federal.estimated.safe_harbor_met';
 const BALANCE_DUE_TARGET = 'us.federal.balance_due';
 const REQUIRED_ANNUAL_TARGET = 'us.federal.estimated.required_annual_payment';
 // 26 U.S.C. § 6654(e)(1): the addition to tax is not imposed when the balance
@@ -135,8 +134,10 @@ Fact vocabulary. The file is one JSON object. Every key below is required unless
                      plus self-employment tax, net investment income tax and Additional Medicare Tax, less refundable credits
                      engine target us.federal.net_tax
                    estimate: the required quarterly estimated payment by the regular installment method.
-                     When us.federal.estimated.safe_harbor_met is true, the figure is zero: no required quarterly estimated payment under 26 U.S.C. § 6654(e). The answer still carries the regular-method installment and the determination.
-                     When that determination is false, the figure is the regular-method installment.
+                     The tool also asks the engine for us.federal.balance_due and us.federal.estimated.required_annual_payment and applies 26 U.S.C. § 6654(e)(1):
+                     when the balance due after withholding is below $1,000, or the withholding stated reaches the required annual payment, the figure is zero,
+                     no required quarterly estimated payment under 26 U.S.C. § 6654(e), and the answer still carries the regular-method installment and the determination.
+                     Otherwise the figure is the regular-method installment.
                      engine target us.federal.estimated.quarterly_payment
                    Each of these, given as operation, is refused by its own name. The annualized installment method is not computed by this tool:
                      us.federal.estimated.annualized_installment_q1
@@ -1067,15 +1068,11 @@ function identityMismatch(parsed, expected) {
   );
 }
 
-// calculate_tax reports a boolean target as valueCents "0" for both true and
-// false. An explicit boolean on that answer is the determination. When the
-// answer has none, § 6654(e)(1) is applied to the engine's own balance_due
-// and required_annual_payment, which are money and do round-trip.
-function determinationOf(safeParsed, balanceParsed, requiredParsed, withheldCents) {
-  if (typeof safeParsed.value === 'boolean') return safeParsed.value;
-  if (typeof safeParsed.determination === 'boolean') return safeParsed.determination;
-  if (safeParsed.answer === 'yes') return true;
-  if (safeParsed.answer === 'no') return false;
+// The engine's own us.federal.estimated.safe_harbor_met is a boolean target, and
+// calculate_tax answers it as valueCents "0" on both arms, so it carries no
+// determination. 26 U.S.C. § 6654(e)(1) is applied here to the engine's own
+// balance_due and required_annual_payment, which are money and do round-trip.
+function determinationOf(balanceParsed, requiredParsed, withheldCents) {
   let balance;
   let required;
   try {
@@ -1561,7 +1558,6 @@ export async function main(argv, options = {}) {
   const payloads = [enginePayload(loaded.facts, primaryTarget)];
   if (loaded.facts.operation === 'estimate') {
     payloads.push(
-      enginePayload(loaded.facts, SAFE_HARBOR_TARGET),
       enginePayload(loaded.facts, BALANCE_DUE_TARGET),
       enginePayload(loaded.facts, REQUIRED_ANNUAL_TARGET)
     );
@@ -1576,38 +1572,21 @@ export async function main(argv, options = {}) {
   if (primary.exitCode) return withInstallNote(primary, installed.note);
   let estimate = null;
   if (loaded.facts.operation === 'estimate') {
-    const safe = interpretMessage(called.responses[1], pin, loaded.facts, {
-      target: SAFE_HARBOR_TARGET,
+    const balance = interpretMessage(called.responses[1], pin, loaded.facts, {
+      target: BALANCE_DUE_TARGET,
+      asOf,
+      signed: true
+    });
+    if (balance.exitCode) return withInstallNote(balance, installed.note);
+    const required = interpretMessage(called.responses[2], pin, loaded.facts, {
+      target: REQUIRED_ANNUAL_TARGET,
       asOf,
       signed: false
     });
-    if (safe.exitCode) return withInstallNote(safe, installed.note);
-    const explicit = typeof safe.parsed.value === 'boolean'
-      || typeof safe.parsed.determination === 'boolean'
-      || safe.parsed.answer === 'yes'
-      || safe.parsed.answer === 'no';
-    let balanceParsed = null;
-    let requiredParsed = null;
-    if (!explicit) {
-      const balance = interpretMessage(called.responses[2], pin, loaded.facts, {
-        target: BALANCE_DUE_TARGET,
-        asOf,
-        signed: true
-      });
-      if (balance.exitCode) return withInstallNote(balance, installed.note);
-      const required = interpretMessage(called.responses[3], pin, loaded.facts, {
-        target: REQUIRED_ANNUAL_TARGET,
-        asOf,
-        signed: false
-      });
-      if (required.exitCode) return withInstallNote(required, installed.note);
-      balanceParsed = balance.parsed;
-      requiredParsed = required.parsed;
-    }
+    if (required.exitCode) return withInstallNote(required, installed.note);
     const determination = determinationOf(
-      safe.parsed,
-      balanceParsed,
-      requiredParsed,
+      balance.parsed,
+      required.parsed,
       dollarsToCents(loaded.facts.estimate.federalTaxWithheld)
     );
     if (determination === null) {
