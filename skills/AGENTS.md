@@ -8,7 +8,7 @@ Capabilities a user invokes by name for their output; `wiser/standards/primitive
 
 | Skill | Description | Owner |
 |-------|-------------|-------|
-| `Tax Intake/SKILL.md` | One JSON facts file for a federal liability or estimate, holding only facts the person stated, or a refusal before any figure | Tax Counselor |
+| `Tax Intake/SKILL.md` | One JSON facts file for a federal estimate, holding only facts the person stated, or a refusal before any figure | Tax Counselor |
 | `Estimated Tax/SKILL.md` | The federal quarterly estimated tax Tax Engine computes from stated facts, with the tool's own label, or the tool's refusal and no figure | Tax Counselor |
 
 <!-- /generated:index -->

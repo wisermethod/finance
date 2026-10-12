@@ -1,7 +1,7 @@
 {
   "name": "finance",
   "displayName": "Finance",
-  "description": "This plugin computes a person's federal quarterly estimated tax and federal total tax for 2025 or 2026 by a locally installed engine for a filer inside the profile Tax Intake asks about, refuses Colorado, every other state, every other year, and the annualized installment method by name, installs @invaro/opentax only with the person's consent, and does not replace a licensed CPA, enrolled agent, or other tax professional, and does not hold itself out as one.",
+  "description": "This plugin computes a person's federal quarterly estimated tax for 2025 or 2026 by a locally installed engine for a filer inside the profile Tax Intake asks about, refuses Colorado, every other state, every other year, and the annualized installment method by name, installs @invaro/opentax only with the person's consent, and does not replace a licensed CPA, enrolled agent, or other tax professional, and does not hold itself out as one.",
   "author": {
     "name": "Wiser Memory",
     "email": "support@wisermemory.com",

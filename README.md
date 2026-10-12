@@ -1,6 +1,6 @@
 # Finance
 
-A WISER plugin for a person's federal quarterly estimated tax and federal total tax for 2025 or 2026, computed by a locally installed engine for a filer inside the profile Tax Intake asks about. Colorado and every other state, every other year, and the annualized installment method are refused by name. It ships the expert Tax Counselor, the skills Tax Intake and Estimated Tax, and the tool Tax Engine. Accounting, venture finance, and pro forma modelling are not built yet.
+A WISER plugin for a person's federal quarterly estimated tax for 2025 or 2026, computed by a locally installed engine for a filer inside the profile Tax Intake asks about. Colorado and every other state, every other year, and the annualized installment method are refused by name. It ships the expert Tax Counselor, the skills Tax Intake and Estimated Tax, and the tool Tax Engine. Accounting, venture finance, and pro forma modelling are not built yet.
 
 This plugin does not replace a licensed CPA, enrolled agent, or other tax professional, and it does not hold itself out as one.
 
