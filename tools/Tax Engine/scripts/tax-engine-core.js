@@ -33,7 +33,6 @@ const UNREADABLE = 'The engine returned a response this tool could not read, so 
 const NET_TAX_TARGET = 'us.federal.net_tax';
 const QUARTERLY_TARGET = 'us.federal.estimated.quarterly_payment';
 const BALANCE_DUE_TARGET = 'us.federal.balance_due';
-const REQUIRED_ANNUAL_TARGET = 'us.federal.estimated.required_annual_payment';
 // 26 U.S.C. § 6654(e)(1): the addition to tax is not imposed when the balance
 // due after withholding is below $1,000.
 const SAFE_HARBOR_BALANCE_CENTS = 100000n;
@@ -137,8 +136,8 @@ Fact vocabulary. The file is one JSON object. Every key below is required unless
                      plus self-employment tax, net investment income tax and Additional Medicare Tax, less refundable credits
                      engine target us.federal.net_tax
                    estimate: the required quarterly estimated payment by the regular installment method.
-                     The tool also asks the engine for us.federal.balance_due and us.federal.estimated.required_annual_payment and applies 26 U.S.C. § 6654(e)(1):
-                     when the balance due after withholding is below $1,000, or the withholding stated reaches the required annual payment, the figure is zero,
+                     The tool asks the engine for us.federal.balance_due and applies 26 U.S.C. § 6654(e)(1) to it:
+                     when that balance due is less than $1,000, the figure is zero,
                      no required quarterly estimated payment under 26 U.S.C. § 6654(e), and the answer still carries the regular-method installment and the determination.
                      Otherwise the figure is the regular-method installment.
                      engine target us.federal.estimated.quarterly_payment
@@ -816,18 +815,24 @@ function featureRefusal(pin, operation) {
     `The operation ${operation} is not supported. Fix: pass operation liability or estimate.`
   );
 }
-
-function dollarsToCents(value) {
-  const lexeme = value instanceof JsonNumber ? value.lexeme : '';
-  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(lexeme);
-  if (!match) throw new Error('cents');
-  return BigInt(match[1]) * 100n + BigInt((match[2] ?? '').padEnd(2, '0'));
+// Whole cents from a validated amount lexeme. Never through a floating-point number.
+export function dollarsToCents(value) {
+  const lexeme = value instanceof JsonNumber ? value.lexeme : undefined;
+  const match = typeof lexeme === 'string' ? /^(\d+)(?:\.(\d{1,2}))?$/.exec(lexeme) : null;
+  if (!match) {
+    throw new Error('dollarsToCents: lexeme is not digits with an optional decimal point and one or two digits');
+  }
+  const frac = (match[2] ?? '').padEnd(2, '0');
+  return BigInt(match[1]) * 100n + BigInt(frac);
 }
 
-function centsToDecimal(cents) {
-  const whole = cents / 100n;
-  const frac = cents % 100n;
-  return `${whole.toString()}.${frac.toString().padStart(2, '0')}`;
+// A non-negative cent count as a decimal string with exactly two digits after the point.
+export function centsToDecimal(cents) {
+  if (typeof cents !== 'bigint' || cents < 0n) {
+    throw new Error('centsToDecimal: cents must be a non-negative BigInt');
+  }
+  const padded = cents.toString(10).padStart(3, '0');
+  return `${padded.slice(0, -2)}.${padded.slice(-2)}`;
 }
 
 function gateFacts(facts, pin) {
@@ -1096,20 +1101,13 @@ function identityMismatch(parsed, expected) {
   );
 }
 
-// The engine's own us.federal.estimated.safe_harbor_met is a boolean target, and
-// calculate_tax answers it as valueCents "0" on both arms, so it carries no
-// determination. 26 U.S.C. § 6654(e)(1) is applied here to the engine's own
-// balance_due and required_annual_payment, which are money and do round-trip.
-function determinationOf(balanceParsed, requiredParsed, withheldCents) {
-  let balance;
-  let required;
-  try {
-    balance = BigInt(balanceParsed.valueCents);
-    required = BigInt(requiredParsed.valueCents);
-  } catch {
-    return null;
-  }
-  return balance < SAFE_HARBOR_BALANCE_CENTS || withheldCents >= required;
+// 26 U.S.C. § 6654(e)(1), applied to the engine's balance-due answer alone.
+// True when that answer's cents are less than $1,000. Null when valueCents
+// is not an integer string (optional minus, then digits).
+function determinationOf(balanceParsed) {
+  const cents = balanceParsed && typeof balanceParsed === 'object' ? balanceParsed.valueCents : undefined;
+  if (typeof cents !== 'string' || !/^-?\d+$/.test(cents)) return null;
+  return BigInt(cents) < SAFE_HARBOR_BALANCE_CENTS;
 }
 
 function interpretMessage(message, pin, facts, expected) {
@@ -1585,10 +1583,7 @@ export async function main(argv, options = {}) {
   const primaryTarget = loaded.facts.operation === 'estimate' ? QUARTERLY_TARGET : NET_TAX_TARGET;
   const payloads = [enginePayload(loaded.facts, primaryTarget)];
   if (loaded.facts.operation === 'estimate') {
-    payloads.push(
-      enginePayload(loaded.facts, BALANCE_DUE_TARGET),
-      enginePayload(loaded.facts, REQUIRED_ANNUAL_TARGET)
-    );
+    payloads.push(enginePayload(loaded.facts, BALANCE_DUE_TARGET));
   }
   const called = await callEngine({ enginePath, payloads, timeoutMs });
   if (called.exitCode) return withInstallNote(called, installed.note);
@@ -1606,17 +1601,7 @@ export async function main(argv, options = {}) {
       signed: true
     });
     if (balance.exitCode) return withInstallNote(balance, installed.note);
-    const required = interpretMessage(called.responses[2], pin, loaded.facts, {
-      target: REQUIRED_ANNUAL_TARGET,
-      asOf,
-      signed: false
-    });
-    if (required.exitCode) return withInstallNote(required, installed.note);
-    const determination = determinationOf(
-      balance.parsed,
-      required.parsed,
-      dollarsToCents(loaded.facts.estimate.federalTaxWithheld)
-    );
+    const determination = determinationOf(balance.parsed);
     if (determination === null) {
       return withInstallNote(fault('ENGINE_UNREADABLE', UNREADABLE), installed.note);
     }

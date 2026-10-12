@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 
-import { main } from '../scripts/tax-engine-core.js';
+import { centsToDecimal, dollarsToCents, main, parseJson } from '../scripts/tax-engine-core.js';
 
 const TOOL = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ENTRY = join(TOOL, 'scripts', 'tax-engine.js');
@@ -887,7 +887,7 @@ describe('tax engine', { concurrency: false }, () => {
       const call = calls.find((item) => item.target === 'us.federal.estimated.quarterly_payment');
       assert.ok(call);
       assert.ok(calls.some((item) => item.target === 'us.federal.balance_due'));
-      assert.ok(calls.some((item) => item.target === 'us.federal.estimated.required_annual_payment'));
+      assert.equal(calls.some((item) => item.target === 'us.federal.estimated.required_annual_payment'), false);
       assert.equal(calls.some((item) => item.target === 'us.federal.estimated.safe_harbor_met'), false);
       assert.equal(call.asOf, '2026-12-31');
       assert.equal(call.payments_estimates.isFarmerOrFisherman, false);
@@ -1624,25 +1624,34 @@ describe('tax engine', { concurrency: false }, () => {
     }
   });
 
-  test('section 6654(e)(1) from the engine balance and required payment, and a broken input returns no figure', async () => {
+  test('cents helpers use the lexeme and write two decimal digits', () => {
+    assert.equal(dollarsToCents(parseJson('150000')), 15000000n);
+    assert.equal(dollarsToCents(parseJson('1000.6')), 100060n);
+    assert.equal(dollarsToCents(parseJson('0.05')), 5n);
+    assert.equal(centsToDecimal(15000000n), '150000.00');
+    assert.equal(centsToDecimal(5n), '0.05');
+    assert.equal(centsToDecimal(0n), '0.00');
+    assert.throws(() => dollarsToCents(parseJson('1.234')));
+  });
+
+  test('section 6654(e)(1) from the engine balance due, and a broken input returns no figure', async () => {
     const box = sandbox();
     try {
       installTree(box.toolDir);
       const pin = pinFor(BUNDLE_BYTES);
       const quarterly = 'us.federal.estimated.quarterly_payment';
       const balanceDue = 'us.federal.balance_due';
-      const requiredAnnual = 'us.federal.estimated.required_annual_payment';
-      const engine = (installmentCents, balanceCents, requiredCents, extra = {}) => placeStub(box.root, {
+      const engine = (installmentCents, balanceCents, extra = {}) => placeStub(box.root, {
         mode: 'ok',
         result: okResult(pin, { valueCents: installmentCents, answer: 'DECOY', target: quarterly }),
         byTarget: {
-          [balanceDue]: okResult(pin, { valueCents: balanceCents, answer: 'DECOY', target: balanceDue, ...(extra.balance || {}) }),
-          [requiredAnnual]: okResult(pin, { valueCents: requiredCents, answer: 'DECOY', target: requiredAnnual, ...(extra.required || {}) })
+          [balanceDue]: okResult(pin, { valueCents: balanceCents, answer: 'DECOY', target: balanceDue, ...(extra.balance || {}) })
         }
       });
       const facts = writeFacts(box.root, estimateFacts());
 
-      const below = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('9630', '42800', '1000000') } });
+      const belowEngine = engine('9630', '42800');
+      const below = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: belowEngine } });
       assert.equal(below.result.exitCode, 0, below.result.stderr);
       const belowBody = JSON.parse(below.result.stdout);
       assert.equal(belowBody.figure.valueCents, '0');
@@ -1652,12 +1661,16 @@ describe('tax engine', { concurrency: false }, () => {
       assert.equal(belowBody.estimateDetail.fourRequiredInstallments, false);
       assert.equal(belowBody.estimateDetail.regularMethodInstallment.valueCents, '9630');
       assert.equal(belowBody.estimateDetail.regularMethodInstallment.dollars, '$96.30');
+      const belowTargets = received(belowEngine).calls.map((entry) => entry.params.arguments.target);
+      assert.deepEqual(belowTargets, [quarterly, balanceDue]);
+      assert.equal(belowTargets.includes('us.federal.estimated.required_annual_payment'), false);
 
-      const refund = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('9630', '-50000', '1000000') } });
+      const refund = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('9630', '-50000') } });
       assert.equal(refund.result.exitCode, 0, refund.result.stderr);
       assert.equal(JSON.parse(refund.result.stdout).estimateDetail.determination, true);
+      assert.equal(JSON.parse(refund.result.stdout).figure.valueCents, '0');
 
-      const atLimit = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('25000', '100000', '1000000') } });
+      const atLimit = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('25000', '100000') } });
       assert.equal(atLimit.result.exitCode, 0, atLimit.result.stderr);
       const atBody = JSON.parse(atLimit.result.stdout);
       assert.equal(atBody.figure.valueCents, '25000');
@@ -1665,22 +1678,9 @@ describe('tax engine', { concurrency: false }, () => {
       assert.equal(atBody.estimateDetail.determination, false);
       assert.equal(atBody.estimateDetail.fourRequiredInstallments, true);
 
-      const coveredFacts = writeFacts(box.root, estimateFacts({
-        estimate: { ...estimateFacts().estimate, federalTaxWithheld: 50 }
-      }));
-      const covered = await run(box, ['compute', '--facts', coveredFacts], { pin, options: { enginePath: engine('9630', '200000', '5000') } });
-      assert.equal(covered.result.exitCode, 0, covered.result.stderr);
-      const coveredBody = JSON.parse(covered.result.stdout);
-      assert.equal(coveredBody.figure.valueCents, '0');
-      assert.equal(coveredBody.estimateDetail.determination, true);
-
-      const short = await run(box, ['compute', '--facts', coveredFacts], { pin, options: { enginePath: engine('9630', '200000', '5001') } });
-      assert.equal(short.result.exitCode, 0, short.result.stderr);
-      assert.equal(JSON.parse(short.result.stdout).estimateDetail.determination, false);
-
       const badRoot = await run(box, ['compute', '--facts', facts], {
         pin,
-        options: { enginePath: engine('9630', '42800', '1000000', { balance: { corpusMerkleRoot: BAD_ROOT } }) }
+        options: { enginePath: engine('9630', '42800', { balance: { corpusMerkleRoot: BAD_ROOT } }) }
       });
       const badRootBody = refusal(badRoot.result, 'PIN_ROOT');
       assert.equal(badRootBody.subject, 'corpusMerkleRoot');
@@ -1689,22 +1689,14 @@ describe('tax engine', { concurrency: false }, () => {
 
       const wrongTarget = await run(box, ['compute', '--facts', facts], {
         pin,
-        options: { enginePath: engine('9630', '42800', '1000000', { balance: { target: 'us.federal.net_tax', asOf: '2025-12-31', forceIdentity: true } }) }
+        options: { enginePath: engine('9630', '42800', { balance: { target: 'us.federal.net_tax', asOf: '2025-12-31', forceIdentity: true } }) }
       });
       const wrongBody = faultBody(wrongTarget.result, 'RESULT_MISMATCH');
       assert.match(wrongBody.message, /us\.federal\.net_tax/);
       assert.equal(wrongTarget.result.stdout, '');
       assert.equal(wrongTarget.result.stderr.includes('9630'), false);
 
-      const badRequiredRoot = await run(box, ['compute', '--facts', facts], {
-        pin,
-        options: { enginePath: engine('9630', '200000', '1000000', { required: { corpusMerkleRoot: BAD_ROOT } }) }
-      });
-      const badRequiredBody = refusal(badRequiredRoot.result, 'PIN_ROOT');
-      assert.equal(badRequiredBody.subject, 'corpusMerkleRoot');
-      assert.equal(badRequiredRoot.result.stderr.includes('9630'), false);
-
-      const unreadable = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('9630', '12.5', '1000000') } });
+      const unreadable = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('9630', '12.5') } });
       faultBody(unreadable.result, 'ENGINE_UNREADABLE');
     } finally {
       box.cleanup();
@@ -1825,54 +1817,42 @@ describe('tax engine', { concurrency: false }, () => {
     }
   });
 
-  test('a needed fact defaulted on the balance or the required payment is refused with no figure', async () => {
+  test('a needed fact defaulted on the balance is refused with no figure', async () => {
     const box = sandbox();
     try {
       installTree(box.toolDir);
       const pin = pinFor(BUNDLE_BYTES);
       const quarterly = 'us.federal.estimated.quarterly_payment';
       const balanceDue = 'us.federal.balance_due';
-      const requiredAnnual = 'us.federal.estimated.required_annual_payment';
-      const clean = (cents, target) => okResult(pin, { valueCents: cents, answer: 'DECOY', target });
-      const defaulted = (cents, target) => okResult(pin, {
-        valueCents: cents,
-        answer: 'DECOY',
-        target,
-        assumptions: [{
-          factId: 'priorYearTax',
-          value: { type: 'money', value: '0' },
-          source: 'default',
-          rationale: 'Assumed no prior-year tax absent contrary input'
-        }]
-      });
       const facts = writeFacts(box.root, estimateFacts());
-      const cases = [
-        {
-          [balanceDue]: defaulted('42800', balanceDue),
-          [requiredAnnual]: clean('1000000', requiredAnnual)
-        },
-        {
-          [balanceDue]: clean('200000', balanceDue),
-          [requiredAnnual]: defaulted('1000000', requiredAnnual)
+      const enginePath = placeStub(box.root, {
+        mode: 'ok',
+        result: okResult(pin, { valueCents: '9630', answer: 'DECOY', target: quarterly }),
+        byTarget: {
+          [balanceDue]: okResult(pin, {
+            valueCents: '42800',
+            answer: 'DECOY',
+            target: balanceDue,
+            assumptions: [{
+              factId: 'priorYearTax',
+              value: { type: 'money', value: '0' },
+              source: 'default',
+              rationale: 'Assumed no prior-year tax absent contrary input'
+            }]
+          })
         }
-      ];
-      for (const byTarget of cases) {
-        const enginePath = placeStub(box.root, {
-          mode: 'ok',
-          result: clean('9630', quarterly),
-          byTarget
-        });
-        const { result } = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath } });
-        const body = refusal(result, 'FACTS_DEFAULTED');
-        assert.equal(body.subject, 'priorYearTax');
-        assert.equal(body.figure, undefined);
-        assert.equal(result.stdout, '');
-        assert.equal(result.stderr.includes('9630'), false);
-        assert.equal(result.stderr.includes('42800'), false);
-        assert.equal(result.stderr.includes('1000000'), false);
-        assert.equal(result.stderr.includes('DECOY'), false);
-        assert.equal(result.stderr.includes('$'), false);
-      }
+      });
+      const { result } = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath } });
+      const body = refusal(result, 'FACTS_DEFAULTED');
+      assert.equal(body.subject, 'priorYearTax');
+      assert.equal(body.figure, undefined);
+      assert.equal(result.stdout, '');
+      assert.equal(result.stderr.includes('9630'), false);
+      assert.equal(result.stderr.includes('42800'), false);
+      assert.equal(result.stderr.includes('DECOY'), false);
+      assert.equal(result.stderr.includes('$'), false);
+      const targets = received(enginePath).calls.map((entry) => entry.params.arguments.target);
+      assert.equal(targets.includes('us.federal.estimated.required_annual_payment'), false);
     } finally {
       box.cleanup();
     }
