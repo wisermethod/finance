@@ -6,3 +6,7 @@ infrastructure/release/dist/
 .Spotlight-V100
 .Trashes
 .stversions/
+
+# Plugin-copy consent. Written on the first authorised install in this copy;
+# not a file this repository ships.
+.wiser-consent
