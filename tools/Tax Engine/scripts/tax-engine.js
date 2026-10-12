@@ -16,6 +16,7 @@
  *   --help                    print usage
  *
  * The fact vocabulary, the refusals, and what check reports are in the help text.
+ * Help defines each fact. spouseItemizes is required only when filing status is mfs.
  */
 
 import { realpathSync } from 'node:fs';

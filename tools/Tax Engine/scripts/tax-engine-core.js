@@ -48,6 +48,8 @@ const BOOLEAN_FIELDS = ['priorYearReturnFiled', 'priorYearTwelveMonths', 'farmer
 
 // Closed lists of the facts each operation needs, and the engine fact each one maps to.
 // priorYearReturnFiled and priorYearTwelveMonths are not engine facts; this tool gates them.
+// spouseItemizes is added for both operations when filingStatus is mfs. The engine
+// fact has no default, and it lives in the engine's filing group.
 const LIABILITY_NEEDED = [
   ['filingStatus', 'filingStatus'],
   ...INCOME_FIELDS.map((name) => [`income.${name}`, name])
@@ -125,19 +127,40 @@ Fact vocabulary. The file is one JSON object. Every key below is required unless
   filingStatus     single, mfj, mfs, hoh, or qss
   income           an object with exactly these keys, each a finite number, zero or greater, with at most two decimal places:
                      wages
+                       The year's wages, Form W-2 box 1, summed over every W-2.
                      taxableInterest
+                       The year's taxable interest, Form 1099-INT box 1 plus box 3.
                      ordinaryDividends
+                       The year's total ordinary dividends, Form 1099-DIV box 1a, qualified dividends included.
+                       The engine is given box 1a minus box 1b, computed in whole cents.
                      qualifiedDividends
+                       Qualified dividends, Form 1099-DIV box 1b.
+                       A qualifiedDividends greater than ordinaryDividends is refused, naming both.
                      shortTermCapitalGains
+                       The net short-term capital gain after netting, zero where the net is a loss.
+                       A net capital loss is outside what this tool computes.
                      longTermCapitalGains
+                       The net long-term capital gain after netting, zero where the net is a loss.
+                       A net capital loss is outside what this tool computes.
+  spouseItemizes   boolean. Required when filingStatus is mfs, and refused by name as an unknown key for any other filing status.
+                   false: the spouse does not itemize deductions on a separate return (26 U.S.C. § 63(c)(6)(A)). Passed to the engine in its filing group.
+                   true is outside the list this tool supports, because this tool collects no itemized deductions and the engine would treat them as zero.
   estimate         required when operation is estimate, and refused by name when operation is liability.
                    An object with exactly these keys:
-                     federalTaxWithheld       amount, as for income
-                     priorYearTax             amount, as for income
-                     priorYearAGI             amount, as for income
-                     priorYearReturnFiled     boolean; a return was filed for the preceding taxable year
-                     priorYearTwelveMonths    boolean; that year was a taxable year of 12 months
-                     farmerOrFisherman        boolean; true is outside the list this tool supports
+                     federalTaxWithheld
+                       The federal income tax withheld for the whole tax year, already withheld plus still to be withheld, Form W-2 box 2.
+                       Estimated payments are excluded, because the regular installment method treats withholding, and only withholding, as paid evenly through the year (26 U.S.C. § 6654(g)).
+                       The engine's own description also folds in estimated payments. This tool's definition does not.
+                     priorYearTax
+                       The total tax shown on the preceding year's return. Amount, as for income.
+                     priorYearAGI
+                       The adjusted gross income shown on the preceding year's return. Amount, as for income.
+                     priorYearReturnFiled
+                       boolean; a return was filed for the preceding taxable year
+                     priorYearTwelveMonths
+                       boolean; that year was a taxable year of 12 months
+                     farmerOrFisherman
+                       boolean; true is outside the list this tool supports
 
 check prints one JSON object and exits 0. Its engine field is absent, complete, or incomplete. bundleMatchesPin and packageVersionMatchesPin are true, false, or null. pin holds the package name and version, the bundle hash, the corpus name and version, the corpus root, and the Node version the pin recorded.
 
@@ -635,6 +658,7 @@ function unknownKeys(facts) {
   const unknown = [];
   const top = new Set(['operation', 'jurisdiction', 'taxYear', 'filingStatus', 'income']);
   if (facts.operation === 'estimate') top.add('estimate');
+  if (facts.filingStatus === 'mfs') top.add('spouseItemizes');
   for (const key of Object.keys(facts)) {
     if (!top.has(key)) unknown.push(key);
   }
@@ -657,6 +681,9 @@ function missingFacts(facts) {
   const missing = [];
   for (const key of ['operation', 'jurisdiction', 'taxYear', 'filingStatus']) {
     if (!Object.hasOwn(facts, key)) missing.push(key);
+  }
+  if (facts.filingStatus === 'mfs' && !Object.hasOwn(facts, 'spouseItemizes')) {
+    missing.push('spouseItemizes');
   }
   if (!Object.hasOwn(facts, 'income')) {
     for (const key of INCOME_FIELDS) missing.push(`income.${key}`);
@@ -721,7 +748,26 @@ function featureRefusal(pin, operation) {
   );
 }
 
+function dollarsToCents(value) {
+  const text = Object.is(value, -0) ? '0' : String(value);
+  const dot = text.indexOf('.');
+  const whole = dot === -1 ? text : text.slice(0, dot);
+  const frac = dot === -1 ? '' : text.slice(dot + 1);
+  return BigInt(whole) * 100n + BigInt(`${frac}00`.slice(0, 2));
+}
+
+function centsToDollars(cents) {
+  const whole = cents / 100n;
+  const frac = cents % 100n;
+  if (frac === 0n) return Number(whole);
+  return Number(`${whole}.${String(frac).padStart(2, '0')}`);
+}
+
 function gateFacts(facts, pin) {
+  // An operation outside the two supported is named before any other key is.
+  if (typeof facts.operation === 'string' && facts.operation !== 'liability' && facts.operation !== 'estimate') {
+    return featureRefusal(pin, facts.operation);
+  }
   if (isColorado(facts.jurisdiction)) {
     return refusal(
       pin,
@@ -737,9 +783,6 @@ function gateFacts(facts, pin) {
       ? `The key estimate is refused when operation is liability. Fix: remove estimate, or pass operation estimate. Run "${HELP_CMD}" for the fact vocabulary.`
       : `The facts contain ${unknown.join(', ')}, which this tool does not accept. Fix: remove them. Run "${HELP_CMD}" for the fact vocabulary.`;
     return refusal(pin, 'UNKNOWN_KEY', unknown.length === 1 ? unknown[0] : unknown, message);
-  }
-  if (typeof facts.operation === 'string' && facts.operation !== 'liability' && facts.operation !== 'estimate') {
-    return featureRefusal(pin, facts.operation);
   }
   const missing = missingFacts(facts);
   if (missing.length) {
@@ -770,6 +813,14 @@ function gateFacts(facts, pin) {
       return invalidValue(pin, `income.${key}`, 'a finite number that is zero or greater, with at most two decimal places', facts.income[key]);
     }
   }
+  if (dollarsToCents(facts.income.qualifiedDividends) > dollarsToCents(facts.income.ordinaryDividends)) {
+    return refusal(
+      pin,
+      'INVALID_VALUE',
+      ['income.ordinaryDividends', 'income.qualifiedDividends'],
+      `income.qualifiedDividends (${shown(facts.income.qualifiedDividends)}) is greater than income.ordinaryDividends (${shown(facts.income.ordinaryDividends)}). Ordinary dividends are Form 1099-DIV box 1a, the total including qualified dividends, and qualified dividends are box 1b, which cannot exceed box 1a. Fix: pass box 1a as income.ordinaryDividends and box 1b as income.qualifiedDividends.`
+    );
+  }
   if (facts.jurisdiction !== 'federal') {
     return refusal(
       pin,
@@ -785,6 +836,19 @@ function gateFacts(facts, pin) {
       facts.taxYear,
       `Tax year ${facts.taxYear} is not supported. Fix: pass taxYear 2025 or 2026.`
     );
+  }
+  if (facts.filingStatus === 'mfs') {
+    if (typeof facts.spouseItemizes !== 'boolean') {
+      return invalidValue(pin, 'spouseItemizes', 'a boolean, true or false', facts.spouseItemizes);
+    }
+    if (facts.spouseItemizes === true) {
+      return refusal(
+        pin,
+        'FEATURE_UNSUPPORTED',
+        'spouseItemizes',
+        'A spouse who itemizes deductions is outside the list this tool supports. This tool collects no itemized deductions, and the engine would treat them as zero. Fix: pass spouseItemizes false only when the spouse does not itemize on a separate return.'
+      );
+    }
   }
   if (facts.operation === 'estimate') {
     if (!isPlainObject(facts.estimate)) {
@@ -823,14 +887,23 @@ function gateFacts(facts, pin) {
   return null;
 }
 
+function engineIncome(income) {
+  const out = Object.create(null);
+  for (const key of INCOME_FIELDS) out[key] = income[key];
+  // Box 1a includes box 1b. The engine's ordinaryDividends is the non-qualified remainder.
+  const ordinaryCents = dollarsToCents(income.ordinaryDividends) - dollarsToCents(income.qualifiedDividends);
+  out.ordinaryDividends = centsToDollars(ordinaryCents);
+  return out;
+}
+
 function enginePayload(facts) {
-  const income = Object.create(null);
-  for (const key of INCOME_FIELDS) income[key] = facts.income[key];
+  const filing = { filingStatus: facts.filingStatus };
+  if (facts.filingStatus === 'mfs') filing.spouseItemizes = facts.spouseItemizes;
   const payload = {
     target: facts.operation === 'liability' ? 'us.federal.net_tax' : 'us.federal.estimated.quarterly_payment',
     asOf: `${facts.taxYear}-12-31`,
-    filing: { filingStatus: facts.filingStatus },
-    income
+    filing,
+    income: engineIncome(facts.income)
   };
   if (facts.operation === 'estimate') {
     payload.payments_estimates = {
@@ -870,9 +943,15 @@ function schemaRefusal(pin, names, detail) {
   );
 }
 
-function defaultedNeeded(assumptions, operation) {
+function neededEngineFacts(facts) {
+  const names = facts.operation === 'estimate' ? ESTIMATE_ENGINE_FACTS : LIABILITY_ENGINE_FACTS;
+  if (facts.filingStatus === 'mfs') return [...names, 'spouseItemizes'];
+  return names;
+}
+
+function defaultedNeeded(assumptions, facts) {
   if (!Array.isArray(assumptions)) return { unreadable: true, found: [] };
-  const needed = new Set(operation === 'estimate' ? ESTIMATE_ENGINE_FACTS : LIABILITY_ENGINE_FACTS);
+  const needed = new Set(neededEngineFacts(facts));
   const found = [];
   for (const entry of assumptions) {
     if (!entry || typeof entry !== 'object') continue;
@@ -900,7 +979,7 @@ function formatCents(cents) {
   return `$${whole}.${frac}`;
 }
 
-function interpretMessage(message, pin, operation) {
+function interpretMessage(message, pin, facts) {
   if (!message || typeof message !== 'object') return fault('ENGINE_UNREADABLE', UNREADABLE);
   if (message.error) {
     if (message.error.code === -32602) {
@@ -975,7 +1054,7 @@ function interpretMessage(message, pin, operation) {
     );
   }
   if (parsed.ok !== true) return fault('ENGINE_UNREADABLE', UNREADABLE);
-  const defaults = defaultedNeeded(parsed.assumptions, operation);
+  const defaults = defaultedNeeded(parsed.assumptions, facts);
   if (defaults.unreadable) return fault('ENGINE_UNREADABLE', UNREADABLE);
   if (defaults.found.length) {
     return refusal(
@@ -1352,7 +1431,7 @@ export async function main(argv, options = {}) {
     timeoutMs
   });
   if (called.exitCode) return withInstallNote(called, installed.note);
-  const interpreted = interpretMessage(called.response, pin, loaded.facts.operation);
+  const interpreted = interpretMessage(called.response, pin, loaded.facts);
   if (interpreted.exitCode) return withInstallNote(interpreted, installed.note);
   const body = successBody({
     facts: loaded.facts,

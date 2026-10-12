@@ -59,6 +59,7 @@ const HELP_TOKENS = [
   'priorYearReturnFiled',
   'priorYearTwelveMonths',
   'farmerOrFisherman',
+  'spouseItemizes',
   'Colorado',
   'us.federal.net_tax',
   'us.federal.estimated.quarterly_payment',
@@ -1153,6 +1154,231 @@ describe('tax engine', { concurrency: false }, () => {
       const marker = JSON.parse(readFileSync(join(realpathSync(box.root), '.wiser-consent'), 'utf8'));
       assert.equal(marker.tool, 'Tax Engine');
       assert.equal(marker.realpath, realpathSync(box.root));
+    } finally {
+      box.cleanup();
+    }
+  });
+
+  function centsOf(value) {
+    const text = Object.is(value, -0) ? '0' : String(value);
+    const dot = text.indexOf('.');
+    const whole = dot === -1 ? text : text.slice(0, dot);
+    const frac = dot === -1 ? '' : text.slice(dot + 1);
+    return BigInt(whole) * 100n + BigInt(`${frac}00`.slice(0, 2));
+  }
+
+  test('help defines each fact, including the lines a document uses', async () => {
+    const result = await main(['help']);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, '');
+    const text = result.stdout;
+    const phrases = [
+      "The year's wages, Form W-2 box 1, summed over every W-2.",
+      "The year's taxable interest, Form 1099-INT box 1 plus box 3.",
+      'Form 1099-DIV box 1a, qualified dividends included',
+      'Form 1099-DIV box 1b',
+      'The net short-term capital gain after netting, zero where the net is a loss.',
+      'The net long-term capital gain after netting, zero where the net is a loss.',
+      'A net capital loss is outside what this tool computes.',
+      'already withheld plus still to be withheld, Form W-2 box 2.',
+      'Estimated payments are excluded',
+      '26 U.S.C. § 6654(g)',
+      "The engine's own description also folds in estimated payments. This tool's definition does not.",
+      "The total tax shown on the preceding year's return.",
+      "The adjusted gross income shown on the preceding year's return.",
+      'a return was filed for the preceding taxable year',
+      'a taxable year of 12 months',
+      'true is outside the list this tool supports',
+      'Required when filingStatus is mfs, and refused by name as an unknown key for any other filing status.',
+      '26 U.S.C. § 63(c)(6)(A)',
+      'collects no itemized deductions and the engine would treat them as zero'
+    ];
+    for (const phrase of phrases) assert.ok(text.includes(phrase), phrase);
+  });
+
+  test('ordinary dividends are box 1a and the engine receives box 1a minus box 1b', async () => {
+    const box = sandbox();
+    try {
+      installTree(box.toolDir);
+      const pin = pinFor(BUNDLE_BYTES);
+      const enginePath = placeStub(box.root, { mode: 'ok', result: okResult(pin) });
+      const equal = liabilityFacts({
+        income: {
+          wages: 0,
+          taxableInterest: 0,
+          ordinaryDividends: 0.3,
+          qualifiedDividends: 0.3,
+          shortTermCapitalGains: 0,
+          longTermCapitalGains: 0
+        }
+      });
+      const equalFile = writeFacts(box.root, equal);
+      const equalRun = await run(box, ['compute', '--facts', equalFile], { pin, options: { enginePath } });
+      assert.equal(equalRun.result.exitCode, 0, equalRun.result.stderr);
+      const equalIncome = received(enginePath).call.params.arguments.income;
+      assert.equal(equalIncome.ordinaryDividends, 0);
+      assert.equal(centsOf(equalIncome.qualifiedDividends), 30n);
+      assert.equal(JSON.stringify(equalIncome.ordinaryDividends), '0');
+
+      const over = liabilityFacts({
+        income: {
+          wages: 0,
+          taxableInterest: 0,
+          ordinaryDividends: 10.25,
+          qualifiedDividends: 0.1,
+          shortTermCapitalGains: 0,
+          longTermCapitalGains: 0
+        }
+      });
+      const overFile = writeFacts(box.root, over);
+      const overRun = await run(box, ['compute', '--facts', overFile], { pin, options: { enginePath } });
+      assert.equal(overRun.result.exitCode, 0, overRun.result.stderr);
+      const overIncome = received(enginePath).call.params.arguments.income;
+      assert.equal(centsOf(overIncome.ordinaryDividends), 1015n);
+      assert.equal(centsOf(overIncome.qualifiedDividends), 10n);
+      assert.equal(JSON.stringify(overIncome.ordinaryDividends), '10.15');
+
+      rmSync(join(dirname(enginePath), 'received.json'), { force: true });
+      const refusedFacts = liabilityFacts({
+        income: {
+          wages: 0,
+          taxableInterest: 0,
+          ordinaryDividends: 4.1,
+          qualifiedDividends: 10.25,
+          shortTermCapitalGains: 0,
+          longTermCapitalGains: 0
+        }
+      });
+      const refusedFile = writeFacts(box.root, refusedFacts);
+      const refusedRun = await run(box, ['compute', '--facts', refusedFile], { pin, options: { enginePath } });
+      const body = refusal(refusedRun.result, 'INVALID_VALUE');
+      assert.deepEqual(subjects(body), ['income.ordinaryDividends', 'income.qualifiedDividends']);
+      assert.match(body.message, /income\.ordinaryDividends/);
+      assert.match(body.message, /income\.qualifiedDividends/);
+      assert.match(body.message, /box 1a/);
+      assert.match(body.message, /box 1b/);
+      assert.equal(received(enginePath), null);
+    } finally {
+      box.cleanup();
+    }
+  });
+
+  test('spouseItemizes is required for mfs, refused otherwise, and false is filed with the engine', async () => {
+    const box = sandbox();
+    try {
+      installTree(box.toolDir);
+      const pin = pinFor(BUNDLE_BYTES);
+      const enginePath = placeStub(box.root, { mode: 'ok', result: okResult(pin, { valueCents: BIG_CENTS }) });
+
+      for (const operation of ['liability', 'estimate']) {
+        const facts = operation === 'estimate'
+          ? estimateFacts({ filingStatus: 'mfs' })
+          : liabilityFacts({ filingStatus: 'mfs' });
+        const file = writeFacts(box.root, facts);
+        const { result } = await run(box, ['compute', '--facts', file], { pin, options: { enginePath } });
+        const body = refusal(result, 'FACTS_MISSING');
+        assert.ok(subjects(body).includes('spouseItemizes'), operation);
+        assert.equal(result.stderr.includes(BIG_CENTS), false);
+      }
+      assert.equal(received(enginePath), null);
+
+      const wrongType = writeFacts(box.root, liabilityFacts({ filingStatus: 'mfs', spouseItemizes: 'no' }));
+      const wrong = await run(box, ['compute', '--facts', wrongType], { pin, options: { enginePath } });
+      assert.equal(refusal(wrong.result, 'INVALID_VALUE').subject, 'spouseItemizes');
+
+      for (const operation of ['liability', 'estimate']) {
+        const base = operation === 'estimate' ? estimateFacts() : liabilityFacts();
+        const facts = { ...base, filingStatus: 'mfs', spouseItemizes: true };
+        const file = writeFacts(box.root, facts);
+        const { result } = await run(box, ['compute', '--facts', file], { pin, options: { enginePath } });
+        const body = refusal(result, 'FEATURE_UNSUPPORTED');
+        assert.equal(body.subject, 'spouseItemizes');
+        assert.match(body.message, /outside the list this tool supports/);
+        assert.match(body.message, /itemized deductions/);
+        assert.equal(result.stderr.includes(BIG_CENTS), false);
+      }
+      assert.equal(received(enginePath), null);
+
+      for (const filingStatus of ['single', 'mfj', 'hoh', 'qss']) {
+        const file = writeFacts(box.root, liabilityFacts({ filingStatus, spouseItemizes: false }));
+        const { result } = await run(box, ['compute', '--facts', file], { pin, options: { enginePath } });
+        const body = refusal(result, 'UNKNOWN_KEY');
+        assert.equal(body.subject, 'spouseItemizes', filingStatus);
+      }
+      assert.equal(received(enginePath), null);
+
+      const passed = writeFacts(box.root, liabilityFacts({ filingStatus: 'mfs', spouseItemizes: false }));
+      const passedRun = await run(box, ['compute', '--facts', passed], { pin, options: { enginePath } });
+      assert.equal(passedRun.result.exitCode, 0, passedRun.result.stderr);
+      const filing = received(enginePath).call.params.arguments.filing;
+      assert.deepEqual(filing, { filingStatus: 'mfs', spouseItemizes: false });
+      assert.equal(received(enginePath).call.params.arguments.spouseItemizes, undefined);
+
+      const estimatePassed = writeFacts(box.root, estimateFacts({ filingStatus: 'mfs', spouseItemizes: false }));
+      const estimateRun = await run(box, ['compute', '--facts', estimatePassed], { pin, options: { enginePath } });
+      assert.equal(estimateRun.result.exitCode, 0, estimateRun.result.stderr);
+      const estimateCall = received(enginePath).call.params.arguments;
+      assert.deepEqual(estimateCall.filing, { filingStatus: 'mfs', spouseItemizes: false });
+      assert.equal(estimateCall.payments_estimates.spouseItemizes, undefined);
+      assert.equal(estimateCall.payments_estimates.isFarmerOrFisherman, false);
+
+      for (const operation of ['liability', 'estimate']) {
+        const assumptions = [{
+          factId: 'spouseItemizes',
+          value: { type: 'bool', value: false },
+          source: 'default',
+          rationale: 'Assumed the spouse does not itemize absent contrary input'
+        }];
+        const defaultEngine = placeStub(box.root, {
+          mode: 'ok',
+          result: okResult(pin, { valueCents: BIG_CENTS, assumptions })
+        });
+        const base = operation === 'estimate'
+          ? estimateFacts({ filingStatus: 'mfs', spouseItemizes: false })
+          : liabilityFacts({ filingStatus: 'mfs', spouseItemizes: false });
+        const file = writeFacts(box.root, base);
+        const { result } = await run(box, ['compute', '--facts', file], { pin, options: { enginePath: defaultEngine } });
+        const body = refusal(result, 'FACTS_DEFAULTED');
+        assert.equal(body.subject, 'spouseItemizes', operation);
+        assert.equal(result.stdout, '');
+        assert.equal(result.stderr.includes(BIG_CENTS), false);
+      }
+
+      const mfjEngine = placeStub(box.root, {
+        mode: 'ok',
+        result: okResult(pin, {
+          assumptions: [{
+            factId: 'spouseItemizes',
+            value: { type: 'bool', value: false },
+            source: 'default',
+            rationale: 'Assumed the spouse does not itemize absent contrary input'
+          }]
+        })
+      });
+      const mfj = writeFacts(box.root, liabilityFacts());
+      const mfjRun = await run(box, ['compute', '--facts', mfj], { pin, options: { enginePath: mfjEngine } });
+      assert.equal(mfjRun.result.exitCode, 0, mfjRun.result.stderr);
+      assert.equal(received(mfjEngine).call.params.arguments.filing.spouseItemizes, undefined);
+    } finally {
+      box.cleanup();
+    }
+  });
+
+  test('an annualized target sent with estimate facts is refused by its own name', async () => {
+    const box = sandbox();
+    try {
+      const pin = pinFor(BUNDLE_BYTES);
+      const enginePath = placeStub(box.root, { mode: 'ok', result: okResult(pin, { valueCents: BIG_CENTS }) });
+      const operation = 'us.federal.estimated.annualized_installment_q2';
+      const facts = writeFacts(box.root, estimateFacts({ operation, notARealFact: 1 }));
+      const { result } = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath } });
+      const body = refusal(result, 'FEATURE_UNSUPPORTED');
+      assert.equal(body.subject, operation);
+      assert.match(body.message, /annualized installment method is not computed by this tool/);
+      assert.equal(body.subject === 'estimate', false);
+      assert.equal(result.stderr.includes('UNKNOWN_KEY'), false);
+      assert.equal(result.stderr.includes(BIG_CENTS), false);
+      assert.equal(received(enginePath), null);
     } finally {
       box.cleanup();
     }
