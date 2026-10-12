@@ -7,7 +7,7 @@ layout: 1
 
 A WISER domain plugin. This file is this root's constitution. The chain starts here: load it before the first read or write under this root.
 
-A WISER plugin for finance work at a company of any kind: tax, accounting, venture finance, and pro forma modelling. No skills or experts have been built yet; an expert bench for that work, with skills under each expert, is the first planned.
+A WISER plugin for finance work at a company of any kind: tax, accounting, venture finance, and pro forma modelling. Its first slice is tax: the expert Tax Counselor, its skills Tax Intake and Estimated Tax, and the tool Tax Engine, which compute a person's federal estimated tax and federal total tax for 2025 and 2026. Accounting, venture finance and pro forma modelling are not built yet.
 
 ## What this root is
 
@@ -43,6 +43,17 @@ Each family directory carries its own `AGENTS.md` index. An empty index is still
 ## Standing constraint
 
 Whatever this plugin becomes, it does not replace a licensed CPA, enrolled agent, or other tax professional, and it does not hold itself out as one. That constraint is decided; it binds any later design and is not open for a build session to relax.
+
+## Third-party engines
+
+A tool here may drive a third-party engine that a person installs, as Tax Engine drives `@invaro/opentax`. Four rules bind every such tool:
+
+- **Never vendor.** This repository ships the manifest and lockfile that name an engine, never the engine's code. The person's own consented install fetches it.
+- **Never derive.** No file here copies, transcribes or adapts an engine's code. A tool reaches an engine only as a separate process.
+- **Never host a modified engine.** No tool here runs a modified copy of an engine, and nothing here serves an engine to anyone over a network.
+- **Still attribute.** Each such tool names its engine, the version, the licence and the source in a `NOTICE.md` beside its `TOOL.md`.
+
+These rules are decided; they bind any later design and are not open for a build session to relax.
 
 ## Layout
 
