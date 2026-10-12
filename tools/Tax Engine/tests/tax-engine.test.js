@@ -1623,7 +1623,7 @@ describe('tax engine', { concurrency: false }, () => {
         result: okResult(pin, { valueCents: installmentCents, answer: 'DECOY', target: quarterly }),
         byTarget: {
           [balanceDue]: okResult(pin, { valueCents: balanceCents, answer: 'DECOY', target: balanceDue, ...(extra.balance || {}) }),
-          [requiredAnnual]: okResult(pin, { valueCents: requiredCents, answer: 'DECOY', target: requiredAnnual })
+          [requiredAnnual]: okResult(pin, { valueCents: requiredCents, answer: 'DECOY', target: requiredAnnual, ...(extra.required || {}) })
         }
       });
       const facts = writeFacts(box.root, estimateFacts());
@@ -1681,6 +1681,14 @@ describe('tax engine', { concurrency: false }, () => {
       assert.match(wrongBody.message, /us\.federal\.net_tax/);
       assert.equal(wrongTarget.result.stdout, '');
       assert.equal(wrongTarget.result.stderr.includes('9630'), false);
+
+      const badRequiredRoot = await run(box, ['compute', '--facts', facts], {
+        pin,
+        options: { enginePath: engine('9630', '200000', '1000000', { required: { corpusMerkleRoot: BAD_ROOT } }) }
+      });
+      const badRequiredBody = refusal(badRequiredRoot.result, 'PIN_ROOT');
+      assert.equal(badRequiredBody.subject, 'corpusMerkleRoot');
+      assert.equal(badRequiredRoot.result.stderr.includes('9630'), false);
 
       const unreadable = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('9630', '12.5', '1000000') } });
       faultBody(unreadable.result, 'ENGINE_UNREADABLE');
