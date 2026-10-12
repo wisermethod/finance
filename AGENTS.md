@@ -7,7 +7,7 @@ layout: 1
 
 A WISER domain plugin. This file is this root's constitution. The chain starts here: load it before the first read or write under this root.
 
-A WISER plugin for finance work at a company of any kind: tax, accounting, venture finance, and pro forma modelling. Its first slice is tax: the expert Tax Counselor, its skills Tax Intake and Estimated Tax, and the tool Tax Engine, which compute a person's federal estimated tax and federal total tax for 2025 and 2026. Accounting, venture finance and pro forma modelling are not built yet.
+A WISER plugin for finance work at a company of any kind: tax, accounting, venture finance, and pro forma modelling. Its first slice is tax: the expert Tax Counselor, its skills Tax Intake and Estimated Tax, and the tool Tax Engine, which compute a person's federal quarterly estimated tax for 2025 and 2026. Accounting, venture finance and pro forma modelling are not built yet.
 
 ## What this root is
 
