@@ -110,7 +110,8 @@ Flags:
 Fact vocabulary. The file is one JSON object. Every key below is required unless a line says otherwise. Any other key, at any level, is refused by name before the engine starts. Zero is a value you state, not a default.
 
   operation        "liability" or "estimate"
-                   liability: federal individual net income tax
+                   liability: the federal total tax net of refundable credits, Form 1040 lines 22 to 24: income tax
+                     plus self-employment tax, net investment income tax and Additional Medicare Tax, less refundable credits
                      engine target us.federal.net_tax
                    estimate: the required quarterly estimated payment by the regular installment method
                      engine target us.federal.estimated.quarterly_payment
@@ -128,6 +129,8 @@ Fact vocabulary. The file is one JSON object. Every key below is required unless
   income           an object with exactly these keys, each a finite number, zero or greater, with at most two decimal places:
                      wages
                        The year's wages, Form W-2 box 1, summed over every W-2.
+                       The engine also takes this as the Medicare wage base for the Additional Medicare Tax, in place of
+                       Form W-2 box 5, which this tool does not collect; where box 5 is higher, that tax is understated.
                      taxableInterest
                        The year's taxable interest, Form 1099-INT box 1 plus box 3.
                      ordinaryDividends
@@ -148,7 +151,8 @@ Fact vocabulary. The file is one JSON object. Every key below is required unless
   estimate         required when operation is estimate, and refused by name when operation is liability.
                    An object with exactly these keys:
                      federalTaxWithheld
-                       The federal income tax withheld for the whole tax year, already withheld plus still to be withheld, Form W-2 box 2.
+                       The federal income tax withheld for the whole tax year, already withheld plus still to be withheld, Form W-2 box 2,
+                       plus any Additional Medicare Tax withheld (Form W-2 box 6 above 1.45% of box 5), summed over every W-2.
                        Estimated payments are excluded, because the regular installment method treats withholding, and only withholding, as paid evenly through the year (26 U.S.C. § 6654(g)).
                        The engine's own description also folds in estimated payments. This tool's definition does not.
                      priorYearTax
@@ -729,7 +733,7 @@ function featureRefusal(pin, operation) {
       pin,
       'FEATURE_UNSUPPORTED',
       operation,
-      `The operation ${operation} is refused by name. The annualized installment method is not computed by this tool. Fix: pass operation estimate for the regular installment method, or liability for the federal individual net income tax.`
+      `The operation ${operation} is refused by name. The annualized installment method is not computed by this tool. Fix: pass operation estimate for the regular installment method, or liability for the federal total tax net of refundable credits.`
     );
   }
   if (operation.includes('.')) {
@@ -1072,6 +1076,14 @@ function interpretMessage(message, pin, facts) {
       'The engine corpus root did not match the pinned root, so no figure is returned. Fix: delete node_modules in the tool directory and run the same command with --install so the pinned engine is the one that runs.'
     );
   }
+  if (typeof parsed.valueCents === 'string' && /^-\d{1,200}$/.test(parsed.valueCents)) {
+    return refusal(
+      pin,
+      'NEGATIVE_FIGURE',
+      'valueCents',
+      'The engine returned a negative figure, meaning refundable credits exceed the tax. This tool collects none of the facts a refundable credit rests on, so such a figure would rest on the engine\'s defaults, and no figure is returned. Fix: compute this return with a full preparation tool or a licensed professional.'
+    );
+  }
   if (typeof parsed.valueCents !== 'string' || !/^\d{1,200}$/.test(parsed.valueCents)) {
     return fault('ENGINE_UNREADABLE', UNREADABLE);
   }
@@ -1092,7 +1104,7 @@ function successBody({ facts, parsed, pin, bundleHash }) {
       dollars: formatCents(parsed.valueCents),
       label: facts.operation === 'estimate'
         ? 'Required quarterly estimated payment by the regular installment method'
-        : 'Federal individual net income tax'
+        : 'Federal total tax net of refundable credits (Form 1040 lines 22 to 24)'
     },
     assumptions: listedDefaults(parsed.assumptions),
     provenance: {

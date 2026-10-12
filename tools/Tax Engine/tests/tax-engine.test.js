@@ -717,6 +717,27 @@ describe('tax engine', { concurrency: false }, () => {
     }
   });
 
+  test('a negative figure from the engine is refused with no figure', async () => {
+    const box = sandbox();
+    try {
+      installTree(box.toolDir);
+      const pin = pinFor(BUNDLE_BYTES);
+      const enginePath = placeStub(box.root, {
+        mode: 'ok',
+        result: okResult(pin, { valueCents: '-4567800', answer: '-$45,678.00' })
+      });
+      const facts = writeFacts(box.root, liabilityFacts());
+      const { result } = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath } });
+      const body = refusal(result, 'NEGATIVE_FIGURE');
+      assert.equal(body.subject, 'valueCents');
+      assert.equal(result.stderr.includes('4567800'), false);
+      assert.equal(result.stderr.includes('45,678'), false);
+      assert.equal(body.provenance.expected.corpusRoot, ROOT_HASH);
+    } finally {
+      box.cleanup();
+    }
+  });
+
   test('success keeps the operation label, the exact cents, and the pin versions', async () => {
     const box = sandbox();
     try {
@@ -764,7 +785,7 @@ describe('tax engine', { concurrency: false }, () => {
       assert.equal(body.filingStatus, 'mfj');
       assert.equal(body.figure.valueCents, BIG_CENTS);
       assert.equal(body.figure.dollars, BIG_DOLLARS);
-      assert.equal(body.figure.label, 'Federal individual net income tax');
+      assert.equal(body.figure.label, 'Federal total tax net of refundable credits (Form 1040 lines 22 to 24)');
       assert.equal(result.stdout.includes('net federal income tax'), false);
       assert.equal(result.stdout.includes('0.1.0'), false);
       assert.equal(result.stdout.includes('DECOY'), false);
@@ -1180,7 +1201,10 @@ describe('tax engine', { concurrency: false }, () => {
       'The net short-term capital gain after netting, zero where the net is a loss.',
       'The net long-term capital gain after netting, zero where the net is a loss.',
       'A net capital loss is outside what this tool computes.',
-      'already withheld plus still to be withheld, Form W-2 box 2.',
+      'already withheld plus still to be withheld, Form W-2 box 2,',
+      'plus any Additional Medicare Tax withheld (Form W-2 box 6 above 1.45% of box 5), summed over every W-2.',
+      'Form W-2 box 5, which this tool does not collect; where box 5 is higher, that tax is understated.',
+      'the federal total tax net of refundable credits, Form 1040 lines 22 to 24',
       'Estimated payments are excluded',
       '26 U.S.C. § 6654(g)',
       "The engine's own description also folds in estimated payments. This tool's definition does not.",
