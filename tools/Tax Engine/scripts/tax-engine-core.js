@@ -25,15 +25,36 @@ const FETCH_HOST = 'registry.npmjs.org';
 const FETCH_BYTES = 5131493;
 const STATEMENT = 'This is computation, not tax advice, and not a substitute for a licensed CPA, enrolled agent, or other tax professional.';
 const ESTIMATE_STATEMENT = 'The figure is each of four required installments by the regular installment method. Withholding is treated as paid evenly. The annualized installment method was not computed.';
+const SAFE_HARBOR_STATEMENT = 'No required quarterly estimated payment under 26 U.S.C. § 6654(e). The regular-method installment is carried with this answer. Withholding is treated as paid evenly. The annualized installment method was not computed.';
+const LIABILITY_LABEL = 'Federal total tax, Form 1040 line 24, less refundable credits';
+const ESTIMATE_LABEL = 'Required quarterly estimated payment by the regular installment method';
+const SAFE_HARBOR_LABEL = 'No required quarterly estimated payment under 26 U.S.C. § 6654(e)';
 const UNREADABLE = 'The engine returned a response this tool could not read, so no figure is returned. Fix: confirm the installed engine is @invaro/opentax 0.4.0 and run the command again.';
+const NET_TAX_TARGET = 'us.federal.net_tax';
+const QUARTERLY_TARGET = 'us.federal.estimated.quarterly_payment';
+const SAFE_HARBOR_TARGET = 'us.federal.estimated.safe_harbor_met';
+const BALANCE_DUE_TARGET = 'us.federal.balance_due';
+const REQUIRED_ANNUAL_TARGET = 'us.federal.estimated.required_annual_payment';
+// 26 U.S.C. § 6654(e)(1): the addition to tax is not imposed when the balance
+// due after withholding is below $1,000.
+const SAFE_HARBOR_BALANCE_CENTS = 100000n;
 
 const INCOME_FIELDS = [
   'wages',
+  'medicareWages',
   'taxableInterest',
   'ordinaryDividends',
   'qualifiedDividends',
   'shortTermCapitalGains',
   'longTermCapitalGains'
+];
+const PROFILE_FIELDS = [
+  'otherIncome',
+  'adjustmentsOrItemizing',
+  'credits',
+  'dependents',
+  'ageOrBlindness',
+  'claimableAsDependent'
 ];
 const ESTIMATE_FIELDS = [
   'federalTaxWithheld',
@@ -110,10 +131,12 @@ Flags:
 Fact vocabulary. The file is one JSON object. Every key below is required unless a line says otherwise. Any other key, at any level, is refused by name before the engine starts. Zero is a value you state, not a default.
 
   operation        "liability" or "estimate"
-                   liability: the federal total tax net of refundable credits, Form 1040 lines 22 to 24: income tax
+                   liability: the federal total tax, Form 1040 line 24, less refundable credits: income tax
                      plus self-employment tax, net investment income tax and Additional Medicare Tax, less refundable credits
                      engine target us.federal.net_tax
-                   estimate: the required quarterly estimated payment by the regular installment method
+                   estimate: the required quarterly estimated payment by the regular installment method.
+                     When us.federal.estimated.safe_harbor_met is true, the figure is zero: no required quarterly estimated payment under 26 U.S.C. § 6654(e). The answer still carries the regular-method installment and the determination.
+                     When that determination is false, the figure is the regular-method installment.
                      engine target us.federal.estimated.quarterly_payment
                    Each of these, given as operation, is refused by its own name. The annualized installment method is not computed by this tool:
                      us.federal.estimated.annualized_installment_q1
@@ -124,13 +147,27 @@ Fact vocabulary. The file is one JSON object. Every key below is required unless
   jurisdiction     "federal"
                    A jurisdiction of co or Colorado, in any case and with surrounding space, is refused by name: nothing this tool runs computes Colorado.
                    Any other jurisdiction is refused as unsupported.
-  taxYear          the integer 2025 or 2026. The tool asks the engine for that year's 31 December.
+  taxYear          the digits 2025 or 2026, with no decimal point and no exponent. The tool asks the engine for that year's 31 December.
   filingStatus     single, mfj, mfs, hoh, or qss
-  income           an object with exactly these keys, each a finite number, zero or greater, with at most two decimal places:
+  profile          an object with exactly these keys, each a boolean. Each must be false for a figure to be computed.
+                   true is outside what this tool computes. None of these is sent to the engine.
+                     otherIncome
+                       The filer or spouse had income of any kind other than the wages, interest, dividends and net capital gains above, such as self-employment or business income, rental income, retirement plan or IRA distributions, Social Security benefits, unemployment compensation or alimony, or had a net capital loss.
+                     adjustmentsOrItemizing
+                       The filer or spouse has any adjustment to income or any deduction other than the standard deduction, such as IRA, HSA or self-employed retirement contributions, student loan interest, educator expenses, the deductions for qualified tips, qualified overtime, car loan interest or seniors, or itemizes.
+                     credits
+                       The filer or spouse claims any credit, such as the child tax credit, the credit for other dependents, an education, child and dependent care, energy, adoption, foreign tax, earned income or premium tax credit, or a credit for excess Social Security tax withheld.
+                     dependents
+                       The filer claims anyone as a dependent.
+                     ageOrBlindness
+                       The filer or spouse was 65 or older, or blind, at the end of the tax year.
+                     claimableAsDependent
+                       The filer or spouse can be claimed as someone else's dependent.
+  income           an object with exactly these keys, each an amount: digits, with an optional decimal point and one or two digits after it, zero or greater. A sign or an exponent is refused. The engine receives each amount as an exact decimal string built from those whole cents.
                      wages
                        The year's wages, Form W-2 box 1, summed over every W-2.
-                       The engine also takes this as the Medicare wage base for the Additional Medicare Tax, in place of
-                       Form W-2 box 5, which this tool does not collect; where box 5 is higher, that tax is understated.
+                     medicareWages
+                       The year's Medicare wages and tips, Form W-2 box 5, summed over every W-2. An amount, as for wages.
                      taxableInterest
                        The year's taxable interest, Form 1099-INT box 1 plus box 3.
                      ordinaryDividends
@@ -151,6 +188,7 @@ Fact vocabulary. The file is one JSON object. Every key below is required unless
   estimate         required when operation is estimate, and refused by name when operation is liability.
                    An object with exactly these keys:
                      federalTaxWithheld
+                       All federal income tax withheld for the year: Form W-2 box 2, Additional Medicare Tax withheld (box 6 above 1.45% of box 5), and box 4 of every Form 1099-INT and 1099-DIV.
                        The federal income tax withheld for the whole tax year, already withheld plus still to be withheld, Form W-2 box 2,
                        plus any Additional Medicare Tax withheld (Form W-2 box 6 above 1.45% of box 5), summed over every W-2.
                        Estimated payments are excluded, because the regular installment method treats withholding, and only withholding, as paid evenly through the year (26 U.S.C. § 6654(g)).
@@ -209,8 +247,14 @@ function fault(code, message) {
   return jsonOut(1, { refused: false, code, message });
 }
 
+class JsonNumber {
+  constructor(lexeme) {
+    this.lexeme = lexeme;
+  }
+}
+
 function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof JsonNumber);
 }
 
 function packageMarker(toolDir) {
@@ -581,9 +625,7 @@ export function parseJson(text) {
       if (!(source[index] >= '0' && source[index] <= '9')) throw parseError('exponent');
       while (source[index] >= '0' && source[index] <= '9') index += 1;
     }
-    const value = Number(source.slice(start, index));
-    if (!Number.isFinite(value)) throw parseError('number');
-    return value;
+    return new JsonNumber(source.slice(start, index));
   }
   const value = parseValue('');
   skip();
@@ -649,10 +691,13 @@ function isColorado(value) {
 
 function shown(value) {
   let text;
-  try {
-    text = JSON.stringify(value);
-  } catch {
-    text = String(value);
+  if (value instanceof JsonNumber) text = value.lexeme;
+  else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = String(value);
+    }
   }
   if (text.length > 80) return `${text.slice(0, 77)}...`;
   return text;
@@ -660,11 +705,17 @@ function shown(value) {
 
 function unknownKeys(facts) {
   const unknown = [];
-  const top = new Set(['operation', 'jurisdiction', 'taxYear', 'filingStatus', 'income']);
+  const top = new Set(['operation', 'jurisdiction', 'taxYear', 'filingStatus', 'profile', 'income']);
   if (facts.operation === 'estimate') top.add('estimate');
   if (facts.filingStatus === 'mfs') top.add('spouseItemizes');
   for (const key of Object.keys(facts)) {
     if (!top.has(key)) unknown.push(key);
+  }
+  if (isPlainObject(facts.profile)) {
+    const allowed = new Set(PROFILE_FIELDS);
+    for (const key of Object.keys(facts.profile)) {
+      if (!allowed.has(key)) unknown.push(`profile.${key}`);
+    }
   }
   if (isPlainObject(facts.income)) {
     const allowed = new Set(INCOME_FIELDS);
@@ -688,6 +739,13 @@ function missingFacts(facts) {
   }
   if (facts.filingStatus === 'mfs' && !Object.hasOwn(facts, 'spouseItemizes')) {
     missing.push('spouseItemizes');
+  }
+  if (!Object.hasOwn(facts, 'profile')) {
+    for (const key of PROFILE_FIELDS) missing.push(`profile.${key}`);
+  } else if (isPlainObject(facts.profile)) {
+    for (const key of PROFILE_FIELDS) {
+      if (!Object.hasOwn(facts.profile, key)) missing.push(`profile.${key}`);
+    }
   }
   if (!Object.hasOwn(facts, 'income')) {
     for (const key of INCOME_FIELDS) missing.push(`income.${key}`);
@@ -720,11 +778,7 @@ function invalidValue(pin, path, expectation, value) {
 }
 
 function amountOk(value) {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return false;
-  const text = Object.is(value, -0) ? '0' : String(value);
-  if (!/^\d+(?:\.\d+)?$/.test(text)) return false;
-  const fraction = text.includes('.') ? text.split('.')[1] : '';
-  return fraction.length <= 2;
+  return value instanceof JsonNumber && /^\d+(?:\.\d{1,2})?$/.test(value.lexeme);
 }
 
 function featureRefusal(pin, operation) {
@@ -733,7 +787,7 @@ function featureRefusal(pin, operation) {
       pin,
       'FEATURE_UNSUPPORTED',
       operation,
-      `The operation ${operation} is refused by name. The annualized installment method is not computed by this tool. Fix: pass operation estimate for the regular installment method, or liability for the federal total tax net of refundable credits.`
+      `The operation ${operation} is refused by name. The annualized installment method is not computed by this tool. Fix: pass operation estimate for the regular installment method, or liability for the federal total tax, Form 1040 line 24, less refundable credits.`
     );
   }
   if (operation.includes('.')) {
@@ -753,18 +807,16 @@ function featureRefusal(pin, operation) {
 }
 
 function dollarsToCents(value) {
-  const text = Object.is(value, -0) ? '0' : String(value);
-  const dot = text.indexOf('.');
-  const whole = dot === -1 ? text : text.slice(0, dot);
-  const frac = dot === -1 ? '' : text.slice(dot + 1);
-  return BigInt(whole) * 100n + BigInt(`${frac}00`.slice(0, 2));
+  const lexeme = value instanceof JsonNumber ? value.lexeme : '';
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(lexeme);
+  if (!match) throw new Error('cents');
+  return BigInt(match[1]) * 100n + BigInt((match[2] ?? '').padEnd(2, '0'));
 }
 
-function centsToDollars(cents) {
+function centsToDecimal(cents) {
   const whole = cents / 100n;
   const frac = cents % 100n;
-  if (frac === 0n) return Number(whole);
-  return Number(`${whole}.${String(frac).padStart(2, '0')}`);
+  return `${whole.toString()}.${frac.toString().padStart(2, '0')}`;
 }
 
 function gateFacts(facts, pin) {
@@ -803,18 +855,36 @@ function gateFacts(facts, pin) {
   if (typeof facts.jurisdiction !== 'string') {
     return invalidValue(pin, 'jurisdiction', 'the string federal', facts.jurisdiction);
   }
-  if (typeof facts.taxYear !== 'number' || !Number.isInteger(facts.taxYear)) {
-    return invalidValue(pin, 'taxYear', 'the integer 2025 or 2026', facts.taxYear);
+  if (!(facts.taxYear instanceof JsonNumber) || !/^\d+$/.test(facts.taxYear.lexeme)) {
+    return invalidValue(pin, 'taxYear', 'the digits 2025 or 2026', facts.taxYear);
   }
   if (typeof facts.filingStatus !== 'string' || !FILING.has(facts.filingStatus)) {
     return invalidValue(pin, 'filingStatus', 'one of single, mfj, mfs, hoh, qss', facts.filingStatus);
   }
+  if (!isPlainObject(facts.profile)) {
+    return invalidValue(pin, 'profile', 'an object of six booleans, each false', facts.profile);
+  }
+  for (const key of PROFILE_FIELDS) {
+    if (typeof facts.profile[key] !== 'boolean') {
+      return invalidValue(pin, `profile.${key}`, 'a boolean, false for a supported profile', facts.profile[key]);
+    }
+  }
+  const unsupportedProfile = PROFILE_FIELDS.filter((key) => facts.profile[key] === true);
+  if (unsupportedProfile.length) {
+    const names = unsupportedProfile.map((key) => `profile.${key}`);
+    return refusal(
+      pin,
+      'FEATURE_UNSUPPORTED',
+      names.length === 1 ? names[0] : names,
+      `${names.join(', ')} is outside the profile this tool computes. A figure is computed only when each profile boolean is false. Fix: pass false only when that statement is true. Run "${HELP_CMD}" for what each one means.`
+    );
+  }
   if (!isPlainObject(facts.income)) {
-    return invalidValue(pin, 'income', 'an object of the six income amounts', facts.income);
+    return invalidValue(pin, 'income', 'an object of the seven income amounts', facts.income);
   }
   for (const key of INCOME_FIELDS) {
     if (!amountOk(facts.income[key])) {
-      return invalidValue(pin, `income.${key}`, 'a finite number that is zero or greater, with at most two decimal places', facts.income[key]);
+      return invalidValue(pin, `income.${key}`, 'digits, with an optional decimal point and one or two digits after it', facts.income[key]);
     }
   }
   if (dollarsToCents(facts.income.qualifiedDividends) > dollarsToCents(facts.income.ordinaryDividends)) {
@@ -833,14 +903,17 @@ function gateFacts(facts, pin) {
       `Jurisdiction ${shown(facts.jurisdiction)} is not supported. Fix: pass jurisdiction federal. This tool computes a federal figure only.`
     );
   }
-  if (facts.taxYear !== 2025 && facts.taxYear !== 2026) {
+  if (facts.taxYear.lexeme !== '2025' && facts.taxYear.lexeme !== '2026') {
+    const yearText = facts.taxYear.lexeme;
+    const yearSubject = /^\d{1,15}$/.test(yearText) ? Number(yearText) : yearText;
     return refusal(
       pin,
       'YEAR_UNSUPPORTED',
-      facts.taxYear,
-      `Tax year ${facts.taxYear} is not supported. Fix: pass taxYear 2025 or 2026.`
+      yearSubject,
+      `Tax year ${yearText} is not supported. Fix: pass taxYear 2025 or 2026.`
     );
   }
+  facts.taxYear = facts.taxYear.lexeme === '2026' ? 2026 : 2025;
   if (facts.filingStatus === 'mfs') {
     if (typeof facts.spouseItemizes !== 'boolean') {
       return invalidValue(pin, 'spouseItemizes', 'a boolean, true or false', facts.spouseItemizes);
@@ -860,7 +933,7 @@ function gateFacts(facts, pin) {
     }
     for (const key of AMOUNT_FIELDS) {
       if (!amountOk(facts.estimate[key])) {
-        return invalidValue(pin, `estimate.${key}`, 'a finite number that is zero or greater, with at most two decimal places', facts.estimate[key]);
+        return invalidValue(pin, `estimate.${key}`, 'digits, with an optional decimal point and one or two digits after it', facts.estimate[key]);
       }
     }
     for (const key of BOOLEAN_FIELDS) {
@@ -892,28 +965,29 @@ function gateFacts(facts, pin) {
 }
 
 function engineIncome(income) {
-  const out = Object.create(null);
-  for (const key of INCOME_FIELDS) out[key] = income[key];
+  const cents = Object.create(null);
+  for (const key of INCOME_FIELDS) cents[key] = dollarsToCents(income[key]);
   // Box 1a includes box 1b. The engine's ordinaryDividends is the non-qualified remainder.
-  const ordinaryCents = dollarsToCents(income.ordinaryDividends) - dollarsToCents(income.qualifiedDividends);
-  out.ordinaryDividends = centsToDollars(ordinaryCents);
+  cents.ordinaryDividends -= cents.qualifiedDividends;
+  const out = Object.create(null);
+  for (const key of INCOME_FIELDS) out[key] = centsToDecimal(cents[key]);
   return out;
 }
 
-function enginePayload(facts) {
+function enginePayload(facts, target) {
   const filing = { filingStatus: facts.filingStatus };
   if (facts.filingStatus === 'mfs') filing.spouseItemizes = facts.spouseItemizes;
   const payload = {
-    target: facts.operation === 'liability' ? 'us.federal.net_tax' : 'us.federal.estimated.quarterly_payment',
+    target,
     asOf: `${facts.taxYear}-12-31`,
     filing,
     income: engineIncome(facts.income)
   };
   if (facts.operation === 'estimate') {
     payload.payments_estimates = {
-      federalTaxWithheld: facts.estimate.federalTaxWithheld,
-      priorYearTax: facts.estimate.priorYearTax,
-      priorYearAGI: facts.estimate.priorYearAGI,
+      federalTaxWithheld: centsToDecimal(dollarsToCents(facts.estimate.federalTaxWithheld)),
+      priorYearTax: centsToDecimal(dollarsToCents(facts.estimate.priorYearTax)),
+      priorYearAGI: centsToDecimal(dollarsToCents(facts.estimate.priorYearAGI)),
       isFarmerOrFisherman: facts.estimate.farmerOrFisherman
     };
   }
@@ -983,7 +1057,37 @@ function formatCents(cents) {
   return `$${whole}.${frac}`;
 }
 
-function interpretMessage(message, pin, facts) {
+function identityMismatch(parsed, expected) {
+  const target = typeof parsed.target === 'string' ? parsed.target : '';
+  const asOf = typeof parsed.asOf === 'string' ? parsed.asOf : '';
+  if (target === expected.target && asOf === expected.asOf) return null;
+  return fault(
+    'RESULT_MISMATCH',
+    `The engine returned target ${shown(parsed.target)} as of ${shown(parsed.asOf)}, which differs from the request ${expected.target} as of ${expected.asOf}, so no figure is returned. Fix: confirm the installed engine is @invaro/opentax 0.4.0 and run the command again.`
+  );
+}
+
+// calculate_tax reports a boolean target as valueCents "0" for both true and
+// false. An explicit boolean on that answer is the determination. When the
+// answer has none, § 6654(e)(1) is applied to the engine's own balance_due
+// and required_annual_payment, which are money and do round-trip.
+function determinationOf(safeParsed, balanceParsed, requiredParsed, withheldCents) {
+  if (typeof safeParsed.value === 'boolean') return safeParsed.value;
+  if (typeof safeParsed.determination === 'boolean') return safeParsed.determination;
+  if (safeParsed.answer === 'yes') return true;
+  if (safeParsed.answer === 'no') return false;
+  let balance;
+  let required;
+  try {
+    balance = BigInt(balanceParsed.valueCents);
+    required = BigInt(requiredParsed.valueCents);
+  } catch {
+    return null;
+  }
+  return balance < SAFE_HARBOR_BALANCE_CENTS || withheldCents >= required;
+}
+
+function interpretMessage(message, pin, facts, expected) {
   if (!message || typeof message !== 'object') return fault('ENGINE_UNREADABLE', UNREADABLE);
   if (message.error) {
     if (message.error.code === -32602) {
@@ -1058,6 +1162,10 @@ function interpretMessage(message, pin, facts) {
     );
   }
   if (parsed.ok !== true) return fault('ENGINE_UNREADABLE', UNREADABLE);
+  if (expected) {
+    const mismatch = identityMismatch(parsed, expected);
+    if (mismatch) return mismatch;
+  }
   const defaults = defaultedNeeded(parsed.assumptions, facts);
   if (defaults.unreadable) return fault('ENGINE_UNREADABLE', UNREADABLE);
   if (defaults.found.length) {
@@ -1076,7 +1184,8 @@ function interpretMessage(message, pin, facts) {
       'The engine corpus root did not match the pinned root, so no figure is returned. Fix: delete node_modules in the tool directory and run the same command with --install so the pinned engine is the one that runs.'
     );
   }
-  if (typeof parsed.valueCents === 'string' && /^-\d{1,200}$/.test(parsed.valueCents)) {
+  const signed = Boolean(expected && expected.signed);
+  if (!signed && typeof parsed.valueCents === 'string' && /^-\d{1,200}$/.test(parsed.valueCents)) {
     return refusal(
       pin,
       'NEGATIVE_FIGURE',
@@ -1084,7 +1193,8 @@ function interpretMessage(message, pin, facts) {
       'The engine returned a negative figure, meaning refundable credits exceed the tax. This tool collects none of the facts a refundable credit rests on, so such a figure would rest on the engine\'s defaults, and no figure is returned. Fix: compute this return with a full preparation tool or a licensed professional.'
     );
   }
-  if (typeof parsed.valueCents !== 'string' || !/^\d{1,200}$/.test(parsed.valueCents)) {
+  const centsPattern = signed ? /^-?\d{1,200}$/ : /^\d{1,200}$/;
+  if (typeof parsed.valueCents !== 'string' || !centsPattern.test(parsed.valueCents)) {
     return fault('ENGINE_UNREADABLE', UNREADABLE);
   }
   if (typeof parsed.artifactHash !== 'string' || parsed.artifactHash.length === 0 || parsed.artifactHash.length > 200) {
@@ -1093,18 +1203,18 @@ function interpretMessage(message, pin, facts) {
   return { parsed };
 }
 
-function successBody({ facts, parsed, pin, bundleHash }) {
+function successBody({ facts, parsed, pin, bundleHash, estimate }) {
+  const met = Boolean(estimate && estimate.determination === true);
+  const figureCents = met ? '0' : parsed.valueCents;
   const body = {
     operation: facts.operation,
     jurisdiction: facts.jurisdiction,
     taxYear: facts.taxYear,
     filingStatus: facts.filingStatus,
     figure: {
-      valueCents: parsed.valueCents,
-      dollars: formatCents(parsed.valueCents),
-      label: facts.operation === 'estimate'
-        ? 'Required quarterly estimated payment by the regular installment method'
-        : 'Federal total tax net of refundable credits (Form 1040 lines 22 to 24)'
+      valueCents: figureCents,
+      dollars: formatCents(figureCents),
+      label: facts.operation === 'estimate' ? (met ? SAFE_HARBOR_LABEL : ESTIMATE_LABEL) : LIABILITY_LABEL
     },
     assumptions: listedDefaults(parsed.assumptions),
     provenance: {
@@ -1122,11 +1232,16 @@ function successBody({ facts, parsed, pin, bundleHash }) {
   };
   if (facts.operation === 'estimate') {
     body.estimateDetail = {
-      fourRequiredInstallments: true,
+      fourRequiredInstallments: !met,
       regularInstallmentMethod: true,
       withholdingTreatedAsPaidEvenly: true,
       annualizedInstallmentMethodComputed: false,
-      statement: ESTIMATE_STATEMENT
+      determination: estimate.determination,
+      regularMethodInstallment: {
+        valueCents: estimate.installment.valueCents,
+        dollars: formatCents(estimate.installment.valueCents)
+      },
+      statement: met ? SAFE_HARBOR_STATEMENT : ESTIMATE_STATEMENT
     };
   }
   return body;
@@ -1161,7 +1276,7 @@ function pinGate(inspection, pin) {
   return null;
 }
 
-function callEngine({ enginePath, payload, timeoutMs }) {
+function callEngine({ enginePath, payloads, timeoutMs }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [enginePath], {
       env: {
@@ -1287,12 +1402,16 @@ function callEngine({ enginePath, payload, timeoutMs }) {
           return;
         }
         notify('notifications/initialized', {});
-        const response = await request('tools/call', {
-          name: 'calculate_tax',
-          arguments: payload
-        });
-        if (settled || response.abandoned) return;
-        settle({ response }, false);
+        const responses = [];
+        for (const payload of payloads) {
+          const response = await request('tools/call', {
+            name: 'calculate_tax',
+            arguments: payload
+          });
+          if (settled || response.abandoned) return;
+          responses.push(response);
+        }
+        settle({ responses }, false);
       } catch {
         if (!settled) {
           settle(fault(
@@ -1437,19 +1556,71 @@ export async function main(argv, options = {}) {
   if (pinned) return withInstallNote(pinned, installed.note);
   const enginePath = options.enginePath || inspection.bundlePath;
   const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
-  const called = await callEngine({
-    enginePath,
-    payload: enginePayload(loaded.facts),
-    timeoutMs
-  });
+  const asOf = `${loaded.facts.taxYear}-12-31`;
+  const primaryTarget = loaded.facts.operation === 'estimate' ? QUARTERLY_TARGET : NET_TAX_TARGET;
+  const payloads = [enginePayload(loaded.facts, primaryTarget)];
+  if (loaded.facts.operation === 'estimate') {
+    payloads.push(
+      enginePayload(loaded.facts, SAFE_HARBOR_TARGET),
+      enginePayload(loaded.facts, BALANCE_DUE_TARGET),
+      enginePayload(loaded.facts, REQUIRED_ANNUAL_TARGET)
+    );
+  }
+  const called = await callEngine({ enginePath, payloads, timeoutMs });
   if (called.exitCode) return withInstallNote(called, installed.note);
-  const interpreted = interpretMessage(called.response, pin, loaded.facts);
-  if (interpreted.exitCode) return withInstallNote(interpreted, installed.note);
+  const primary = interpretMessage(called.responses[0], pin, loaded.facts, {
+    target: primaryTarget,
+    asOf,
+    signed: false
+  });
+  if (primary.exitCode) return withInstallNote(primary, installed.note);
+  let estimate = null;
+  if (loaded.facts.operation === 'estimate') {
+    const safe = interpretMessage(called.responses[1], pin, loaded.facts, {
+      target: SAFE_HARBOR_TARGET,
+      asOf,
+      signed: false
+    });
+    if (safe.exitCode) return withInstallNote(safe, installed.note);
+    const explicit = typeof safe.parsed.value === 'boolean'
+      || typeof safe.parsed.determination === 'boolean'
+      || safe.parsed.answer === 'yes'
+      || safe.parsed.answer === 'no';
+    let balanceParsed = null;
+    let requiredParsed = null;
+    if (!explicit) {
+      const balance = interpretMessage(called.responses[2], pin, loaded.facts, {
+        target: BALANCE_DUE_TARGET,
+        asOf,
+        signed: true
+      });
+      if (balance.exitCode) return withInstallNote(balance, installed.note);
+      const required = interpretMessage(called.responses[3], pin, loaded.facts, {
+        target: REQUIRED_ANNUAL_TARGET,
+        asOf,
+        signed: false
+      });
+      if (required.exitCode) return withInstallNote(required, installed.note);
+      balanceParsed = balance.parsed;
+      requiredParsed = required.parsed;
+    }
+    const determination = determinationOf(
+      safe.parsed,
+      balanceParsed,
+      requiredParsed,
+      dollarsToCents(loaded.facts.estimate.federalTaxWithheld)
+    );
+    if (determination === null) {
+      return withInstallNote(fault('ENGINE_UNREADABLE', UNREADABLE), installed.note);
+    }
+    estimate = { determination, installment: primary.parsed };
+  }
   const body = successBody({
     facts: loaded.facts,
-    parsed: interpreted.parsed,
+    parsed: primary.parsed,
     pin,
-    bundleHash: inspection.bundleHash
+    bundleHash: inspection.bundleHash,
+    estimate
   });
   return withInstallNote(jsonOut(0, body), installed.note);
 }

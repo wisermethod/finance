@@ -22,7 +22,8 @@ const report = {
   argv: process.argv.slice(1),
   execArgv: process.execArgv,
   env: process.env,
-  methods: []
+  methods: [],
+  calls: []
 };
 writeFileSync(reportPath, `${JSON.stringify(report)}\n`);
 
@@ -39,8 +40,29 @@ function textResult(id, text, isError) {
   };
 }
 
-function responseFor(id) {
-  if (config.mode === 'ok') return textResult(id, JSON.stringify(config.result), false);
+function applyIdentity(result, msg) {
+  if (!result || typeof result !== 'object') return result;
+  const copy = { ...result };
+  const forced = config.keepResultIdentity || copy.forceIdentity === true;
+  delete copy.forceIdentity;
+  if (forced) return copy;
+  const args = msg && msg.params && msg.params.arguments;
+  if (!args || typeof args !== 'object') return copy;
+  if (typeof args.target === 'string') copy.target = args.target;
+  if (typeof args.asOf === 'string') copy.asOf = args.asOf;
+  return copy;
+}
+
+function responseFor(id, msg) {
+  if (config.mode === 'ok') {
+    const args = msg && msg.params && msg.params.arguments;
+    const target = args && args.target;
+    let result = config.result;
+    if (config.byTarget && target && Object.prototype.hasOwnProperty.call(config.byTarget, target)) {
+      result = config.byTarget[target];
+    }
+    return textResult(id, JSON.stringify(applyIdentity(result, msg)), false);
+  }
   if (config.mode === 'needs-facts') {
     return textResult(id, JSON.stringify({
       ok: false,
@@ -112,7 +134,10 @@ process.stdin.on('data', (chunk) => {
     const msg = JSON.parse(line);
     if (msg.method) {
       report.methods.push(msg.method);
-      if (msg.method === 'tools/call') report.call = msg;
+      if (msg.method === 'tools/call') {
+        report.calls.push(msg);
+        report.call = msg;
+      }
       writeFileSync(reportPath, `${JSON.stringify(report)}\n`);
     }
     if (config.mode === 'hang') continue;
@@ -134,7 +159,7 @@ process.stdin.on('data', (chunk) => {
         process.stdout.write('this is not json\n');
         continue;
       }
-      const body = responseFor(msg.id);
+      const body = responseFor(msg.id, msg);
       if (body) process.stdout.write(`${JSON.stringify(body)}\n`);
     }
   }
