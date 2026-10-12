@@ -59,6 +59,7 @@ const HELP_TOKENS = [
   'priorYearAGI',
   'priorYearReturnFiled',
   'priorYearTwelveMonths',
+  'priorYearAdjusted',
   'farmerOrFisherman',
   'spouseItemizes',
   'profile',
@@ -68,6 +69,7 @@ const HELP_TOKENS = [
   'dependents',
   'ageOrBlindness',
   'claimableAsDependent',
+  'otherTaxes',
   'Colorado',
   'us.federal.net_tax',
   'us.federal.estimated.quarterly_payment',
@@ -99,6 +101,7 @@ function supportedProfile(over = {}) {
     dependents: false,
     ageOrBlindness: false,
     claimableAsDependent: false,
+    otherTaxes: false,
     ...over
   };
 }
@@ -133,6 +136,7 @@ function estimateFacts(over = {}) {
       priorYearAGI: 150000,
       priorYearReturnFiled: true,
       priorYearTwelveMonths: true,
+      priorYearAdjusted: false,
       farmerOrFisherman: false
     },
     ...over
@@ -419,6 +423,7 @@ describe('tax engine', { concurrency: false }, () => {
         'estimate.priorYearAGI',
         'estimate.priorYearReturnFiled',
         'estimate.priorYearTwelveMonths',
+        'estimate.priorYearAdjusted',
         'estimate.farmerOrFisherman'
       ]);
       assert.equal(received(enginePath), null);
@@ -894,6 +899,7 @@ describe('tax engine', { concurrency: false }, () => {
       assert.equal(body.estimateDetail.regularMethodInstallment.valueCents, '250000');
       assert.equal(JSON.stringify(call).includes('priorYearReturnFiled'), false);
       assert.equal(JSON.stringify(call).includes('priorYearTwelveMonths'), false);
+      assert.equal(JSON.stringify(call).includes('priorYearAdjusted'), false);
     } finally {
       box.cleanup();
     }
@@ -1242,8 +1248,15 @@ describe('tax engine', { concurrency: false }, () => {
       'Estimated payments are excluded',
       '26 U.S.C. § 6654(g)',
       "The engine's own description also folds in estimated payments. This tool's definition does not.",
-      "The total tax shown on the preceding year's return.",
+      "The total tax shown on the preceding year's return, Form 1040 line 24, as amended if it was.",
+      'With priorYearAdjusted false, that amount is the one 26 U.S.C. § 6654(d)(1)(B) uses.',
       "The adjusted gross income shown on the preceding year's return.",
+      'the earned income credit, the additional child tax credit, the refundable part of the American opportunity credit or a net premium tax credit',
+      'filed a joint return in one of the two years and a separate return in the other',
+      'The engine reads a zero box 5 as absent and substitutes box 1, so wages exempt from Medicare tax are outside this tool.',
+      'owes any federal tax other than the income tax, net investment income tax and Additional Medicare Tax',
+      'household employment taxes for a household employee (Schedule H)',
+      "The estimate's current-year tax is the engine's liability computation, which takes the tax from the IRS Tax Table for taxable income under $100,000 as the return itself does, where Form 1040-ES's worksheet uses the rate schedules, so the two can differ by a few dollars.",
       'a return was filed for the preceding taxable year',
       'a taxable year of 12 months',
       'true is outside the list this tool supports',
@@ -1539,7 +1552,8 @@ describe('tax engine', { concurrency: false }, () => {
       'credits',
       'dependents',
       'ageOrBlindness',
-      'claimableAsDependent'
+      'claimableAsDependent',
+      'otherTaxes'
     ];
     const box = sandbox();
     try {
@@ -1692,6 +1706,173 @@ describe('tax engine', { concurrency: false }, () => {
 
       const unreadable = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath: engine('9630', '12.5', '1000000') } });
       faultBody(unreadable.result, 'ENGINE_UNREADABLE');
+    } finally {
+      box.cleanup();
+    }
+  });
+
+  test('medicare wages of zero with wages above zero are refused, and zero for both is accepted', async () => {
+    const box = sandbox();
+    try {
+      installTree(box.toolDir);
+      const pin = pinFor(BUNDLE_BYTES);
+      const enginePath = placeStub(box.root, { mode: 'ok', result: okResult(pin, { valueCents: BIG_CENTS, answer: 'DECOY' }) });
+      for (const operation of ['liability', 'estimate']) {
+        const base = operation === 'estimate' ? estimateFacts() : liabilityFacts();
+        const facts = writeFacts(box.root, {
+          ...base,
+          income: { ...base.income, wages: 52000, medicareWages: 0 }
+        });
+        const { result } = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath } });
+        const body = refusal(result, 'FEATURE_UNSUPPORTED');
+        assert.equal(body.subject, 'income.medicareWages', operation);
+        assert.match(body.message, /reads a zero box 5 as absent/);
+        assert.match(body.message, /substitutes box 1/);
+        assert.match(body.message, /wages exempt from Medicare tax are outside this tool/);
+        assert.equal(result.stdout, '');
+        assert.equal(result.stderr.includes(BIG_CENTS), false);
+        assert.equal(result.stderr.includes('DECOY'), false);
+      }
+      assert.equal(received(enginePath), null);
+
+      const acceptedIncome = {
+        ...liabilityFacts().income,
+        wages: 0,
+        medicareWages: 0
+      };
+      const liabilityFile = writeFacts(box.root, liabilityFacts({ income: acceptedIncome }));
+      const accepted = await run(box, ['compute', '--facts', liabilityFile], { pin, options: { enginePath } });
+      assert.equal(accepted.result.exitCode, 0, accepted.result.stderr);
+      const sent = received(enginePath).call.params.arguments.income;
+      assert.equal(sent.wages, '0.00');
+      assert.equal(sent.medicareWages, '0.00');
+
+      const estimateFile = writeFacts(box.root, estimateFacts({ income: acceptedIncome }));
+      const acceptedEstimate = await run(box, ['compute', '--facts', estimateFile], { pin, options: { enginePath } });
+      assert.equal(acceptedEstimate.result.exitCode, 0, acceptedEstimate.result.stderr);
+      const estimateSent = received(enginePath).calls
+        .map((entry) => entry.params.arguments)
+        .find((item) => item.target === 'us.federal.estimated.quarterly_payment');
+      assert.equal(estimateSent.income.wages, '0.00');
+      assert.equal(estimateSent.income.medicareWages, '0.00');
+    } finally {
+      box.cleanup();
+    }
+  });
+
+  test('priorYearAdjusted true is refused, absence is missing, and false is not sent', async () => {
+    const box = sandbox();
+    try {
+      installTree(box.toolDir);
+      const pin = pinFor(BUNDLE_BYTES);
+      const enginePath = placeStub(box.root, { mode: 'ok', result: okResult(pin, { valueCents: BIG_CENTS, answer: 'DECOY' }) });
+      const turnedOn = estimateFacts();
+      turnedOn.estimate = { ...turnedOn.estimate, priorYearAdjusted: true };
+      const trueFile = writeFacts(box.root, turnedOn);
+      const { result } = await run(box, ['compute', '--facts', trueFile], { pin, options: { enginePath } });
+      const body = refusal(result, 'FEATURE_UNSUPPORTED');
+      assert.equal(body.subject, 'estimate.priorYearAdjusted');
+      assert.match(body.message, /refundable credit/);
+      assert.match(body.message, /6654\(d\)\(1\)\(B\)/);
+      assert.equal(result.stdout, '');
+      assert.equal(result.stderr.includes(BIG_CENTS), false);
+      assert.equal(result.stderr.includes('DECOY'), false);
+
+      const absent = estimateFacts();
+      delete absent.estimate.priorYearAdjusted;
+      const absentFile = writeFacts(box.root, absent);
+      const missing = await run(box, ['compute', '--facts', absentFile], { pin, options: { enginePath } });
+      assert.equal(refusal(missing.result, 'FACTS_MISSING').subject, 'estimate.priorYearAdjusted');
+      assert.equal(received(enginePath), null);
+
+      const kept = writeFacts(box.root, estimateFacts());
+      const sent = await run(box, ['compute', '--facts', kept], { pin, options: { enginePath } });
+      assert.equal(sent.result.exitCode, 0, sent.result.stderr);
+      for (const call of received(enginePath).calls.map((entry) => entry.params.arguments)) {
+        assert.equal(JSON.stringify(call).includes('priorYearAdjusted'), false);
+        assert.equal(call.payments_estimates.priorYearTax, '10000.00');
+      }
+    } finally {
+      box.cleanup();
+    }
+  });
+
+  test('an answer with no target or no asOf is a mismatch fault with no figure', async () => {
+    const box = sandbox();
+    try {
+      installTree(box.toolDir);
+      const pin = pinFor(BUNDLE_BYTES);
+      const facts = writeFacts(box.root, liabilityFacts());
+      const missingTarget = okResult(pin, { valueCents: BIG_CENTS, answer: '$0.01 DECOY' });
+      delete missingTarget.target;
+      const missingAsOf = okResult(pin, { valueCents: BIG_CENTS, answer: '$0.01 DECOY' });
+      delete missingAsOf.asOf;
+      for (const result of [missingTarget, missingAsOf]) {
+        const enginePath = placeStub(box.root, { mode: 'ok', keepResultIdentity: true, result });
+        const runResult = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath } });
+        const body = faultBody(runResult.result, 'RESULT_MISMATCH');
+        assert.match(body.message, /differs from the request/);
+        assert.match(body.message, /us\.federal\.net_tax/);
+        assert.match(body.message, /none/);
+        assert.equal(body.figure, undefined);
+        assert.equal(runResult.result.stdout, '');
+        assert.equal(runResult.result.stderr.includes(BIG_CENTS), false);
+        assert.equal(runResult.result.stderr.includes('DECOY'), false);
+        assert.equal(runResult.result.stderr.includes('$'), false);
+      }
+    } finally {
+      box.cleanup();
+    }
+  });
+
+  test('a needed fact defaulted on the balance or the required payment is refused with no figure', async () => {
+    const box = sandbox();
+    try {
+      installTree(box.toolDir);
+      const pin = pinFor(BUNDLE_BYTES);
+      const quarterly = 'us.federal.estimated.quarterly_payment';
+      const balanceDue = 'us.federal.balance_due';
+      const requiredAnnual = 'us.federal.estimated.required_annual_payment';
+      const clean = (cents, target) => okResult(pin, { valueCents: cents, answer: 'DECOY', target });
+      const defaulted = (cents, target) => okResult(pin, {
+        valueCents: cents,
+        answer: 'DECOY',
+        target,
+        assumptions: [{
+          factId: 'priorYearTax',
+          value: { type: 'money', value: '0' },
+          source: 'default',
+          rationale: 'Assumed no prior-year tax absent contrary input'
+        }]
+      });
+      const facts = writeFacts(box.root, estimateFacts());
+      const cases = [
+        {
+          [balanceDue]: defaulted('42800', balanceDue),
+          [requiredAnnual]: clean('1000000', requiredAnnual)
+        },
+        {
+          [balanceDue]: clean('200000', balanceDue),
+          [requiredAnnual]: defaulted('1000000', requiredAnnual)
+        }
+      ];
+      for (const byTarget of cases) {
+        const enginePath = placeStub(box.root, {
+          mode: 'ok',
+          result: clean('9630', quarterly),
+          byTarget
+        });
+        const { result } = await run(box, ['compute', '--facts', facts], { pin, options: { enginePath } });
+        const body = refusal(result, 'FACTS_DEFAULTED');
+        assert.equal(body.subject, 'priorYearTax');
+        assert.equal(body.figure, undefined);
+        assert.equal(result.stdout, '');
+        assert.equal(result.stderr.includes('9630'), false);
+        assert.equal(result.stderr.includes('42800'), false);
+        assert.equal(result.stderr.includes('1000000'), false);
+        assert.equal(result.stderr.includes('DECOY'), false);
+        assert.equal(result.stderr.includes('$'), false);
+      }
     } finally {
       box.cleanup();
     }

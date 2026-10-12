@@ -53,7 +53,8 @@ const PROFILE_FIELDS = [
   'credits',
   'dependents',
   'ageOrBlindness',
-  'claimableAsDependent'
+  'claimableAsDependent',
+  'otherTaxes'
 ];
 const ESTIMATE_FIELDS = [
   'federalTaxWithheld',
@@ -61,15 +62,16 @@ const ESTIMATE_FIELDS = [
   'priorYearAGI',
   'priorYearReturnFiled',
   'priorYearTwelveMonths',
+  'priorYearAdjusted',
   'farmerOrFisherman'
 ];
 const AMOUNT_FIELDS = ['federalTaxWithheld', 'priorYearTax', 'priorYearAGI'];
-const BOOLEAN_FIELDS = ['priorYearReturnFiled', 'priorYearTwelveMonths', 'farmerOrFisherman'];
+const BOOLEAN_FIELDS = ['priorYearReturnFiled', 'priorYearTwelveMonths', 'priorYearAdjusted', 'farmerOrFisherman'];
 
 // Closed lists of the facts each operation needs, and the engine fact each one maps to.
-// priorYearReturnFiled and priorYearTwelveMonths are not engine facts; this tool gates them.
-// spouseItemizes is added for both operations when filingStatus is mfs. The engine
-// fact has no default, and it lives in the engine's filing group.
+// priorYearReturnFiled, priorYearTwelveMonths, and priorYearAdjusted are not engine facts;
+// this tool gates them. spouseItemizes is added for both operations when filingStatus is mfs.
+// The engine fact has no default, and it lives in the engine's filing group.
 const LIABILITY_NEEDED = [
   ['filingStatus', 'filingStatus'],
   ...INCOME_FIELDS.map((name) => [`income.${name}`, name])
@@ -81,6 +83,7 @@ const ESTIMATE_NEEDED = [
   ['estimate.priorYearAGI', 'priorYearAGI'],
   ['estimate.priorYearReturnFiled', null],
   ['estimate.priorYearTwelveMonths', null],
+  ['estimate.priorYearAdjusted', null],
   ['estimate.farmerOrFisherman', 'isFarmerOrFisherman']
 ];
 const LIABILITY_ENGINE_FACTS = LIABILITY_NEEDED.map((pair) => pair[1]);
@@ -139,6 +142,7 @@ Fact vocabulary. The file is one JSON object. Every key below is required unless
                      no required quarterly estimated payment under 26 U.S.C. § 6654(e), and the answer still carries the regular-method installment and the determination.
                      Otherwise the figure is the regular-method installment.
                      engine target us.federal.estimated.quarterly_payment
+                     The estimate's current-year tax is the engine's liability computation, which takes the tax from the IRS Tax Table for taxable income under $100,000 as the return itself does, where Form 1040-ES's worksheet uses the rate schedules, so the two can differ by a few dollars.
                    Each of these, given as operation, is refused by its own name. The annualized installment method is not computed by this tool:
                      us.federal.estimated.annualized_installment_q1
                      us.federal.estimated.annualized_installment_q2
@@ -164,11 +168,14 @@ Fact vocabulary. The file is one JSON object. Every key below is required unless
                        The filer or spouse was 65 or older, or blind, at the end of the tax year.
                      claimableAsDependent
                        The filer or spouse can be claimed as someone else's dependent.
+                     otherTaxes
+                       The filer or spouse owes any federal tax other than the income tax, net investment income tax and Additional Medicare Tax on the facts above, such as household employment taxes for a household employee (Schedule H), the alternative minimum tax from an incentive stock option exercise or another preference, an additional tax on a retirement plan or HSA distribution, or the repayment of advance premium tax credit.
   income           an object with exactly these keys, each an amount: digits, with an optional decimal point and one or two digits after it, zero or greater. A sign or an exponent is refused. The engine receives each amount as an exact decimal string built from those whole cents.
                      wages
                        The year's wages, Form W-2 box 1, summed over every W-2.
                      medicareWages
                        The year's Medicare wages and tips, Form W-2 box 5, summed over every W-2. An amount, as for wages.
+                       Zero while wages are above zero is refused. The engine reads a zero box 5 as absent and substitutes box 1, so wages exempt from Medicare tax are outside this tool. Zero for both is a value you state.
                      taxableInterest
                        The year's taxable interest, Form 1099-INT box 1 plus box 3.
                      ordinaryDividends
@@ -195,13 +202,15 @@ Fact vocabulary. The file is one JSON object. Every key below is required unless
                        Estimated payments are excluded, because the regular installment method treats withholding, and only withholding, as paid evenly through the year (26 U.S.C. § 6654(g)).
                        The engine's own description also folds in estimated payments. This tool's definition does not.
                      priorYearTax
-                       The total tax shown on the preceding year's return. Amount, as for income.
+                       The total tax shown on the preceding year's return, Form 1040 line 24, as amended if it was. With priorYearAdjusted false, that amount is the one 26 U.S.C. § 6654(d)(1)(B) uses. Amount, as for income.
                      priorYearAGI
                        The adjusted gross income shown on the preceding year's return. Amount, as for income.
                      priorYearReturnFiled
                        boolean; a return was filed for the preceding taxable year
                      priorYearTwelveMonths
                        boolean; that year was a taxable year of 12 months
+                     priorYearAdjusted
+                       boolean; must be false. The preceding year's return claimed any refundable credit (such as the earned income credit, the additional child tax credit, the refundable part of the American opportunity credit or a net premium tax credit), or the filer filed a joint return in one of the two years and a separate return in the other. true is outside what this tool computes. The tool gates on it and does not send it to the engine.
                      farmerOrFisherman
                        boolean; true is outside the list this tool supports
 
@@ -700,6 +709,7 @@ function shown(value) {
       text = String(value);
     }
   }
+  if (typeof text !== 'string') text = String(value);
   if (text.length > 80) return `${text.slice(0, 77)}...`;
   return text;
 }
@@ -863,7 +873,7 @@ function gateFacts(facts, pin) {
     return invalidValue(pin, 'filingStatus', 'one of single, mfj, mfs, hoh, qss', facts.filingStatus);
   }
   if (!isPlainObject(facts.profile)) {
-    return invalidValue(pin, 'profile', 'an object of six booleans, each false', facts.profile);
+    return invalidValue(pin, 'profile', 'an object of seven booleans, each false', facts.profile);
   }
   for (const key of PROFILE_FIELDS) {
     if (typeof facts.profile[key] !== 'boolean') {
@@ -887,6 +897,14 @@ function gateFacts(facts, pin) {
     if (!amountOk(facts.income[key])) {
       return invalidValue(pin, `income.${key}`, 'digits, with an optional decimal point and one or two digits after it', facts.income[key]);
     }
+  }
+  if (dollarsToCents(facts.income.medicareWages) === 0n && dollarsToCents(facts.income.wages) > 0n) {
+    return refusal(
+      pin,
+      'FEATURE_UNSUPPORTED',
+      'income.medicareWages',
+      'income.medicareWages of zero while income.wages is above zero is outside this tool. The engine reads a zero box 5 as absent and substitutes box 1, so wages exempt from Medicare tax are outside this tool. Fix: pass income.medicareWages above zero when box 5 is above zero, or pass zero for both when there are no wages.'
+    );
   }
   if (dollarsToCents(facts.income.qualifiedDividends) > dollarsToCents(facts.income.ordinaryDividends)) {
     return refusal(
@@ -930,7 +948,7 @@ function gateFacts(facts, pin) {
   }
   if (facts.operation === 'estimate') {
     if (!isPlainObject(facts.estimate)) {
-      return invalidValue(pin, 'estimate', 'an object of the six estimate facts', facts.estimate);
+      return invalidValue(pin, 'estimate', 'an object of the seven estimate facts', facts.estimate);
     }
     for (const key of AMOUNT_FIELDS) {
       if (!amountOk(facts.estimate[key])) {
@@ -948,6 +966,14 @@ function gateFacts(facts, pin) {
         'FEATURE_UNSUPPORTED',
         'estimate.farmerOrFisherman',
         'A farmer or fisherman is outside the list this tool supports. Fix: pass estimate.farmerOrFisherman false. This tool computes only for a filer who is not a farmer or fisherman.'
+      );
+    }
+    if (facts.estimate.priorYearAdjusted === true) {
+      return refusal(
+        pin,
+        'FEATURE_UNSUPPORTED',
+        'estimate.priorYearAdjusted',
+        'estimate.priorYearAdjusted is outside what this tool computes. The preceding year\'s return claimed a refundable credit, or the filer filed a joint return in one of the two years and a separate return in the other, so Form 1040 line 24 is not the amount 26 U.S.C. § 6654(d)(1)(B) uses. Fix: pass estimate.priorYearAdjusted false only when neither is true.'
       );
     }
     const ineligible = [];
@@ -1062,9 +1088,11 @@ function identityMismatch(parsed, expected) {
   const target = typeof parsed.target === 'string' ? parsed.target : '';
   const asOf = typeof parsed.asOf === 'string' ? parsed.asOf : '';
   if (target === expected.target && asOf === expected.asOf) return null;
+  const returnedTarget = parsed.target === undefined ? 'none' : shown(parsed.target);
+  const returnedAsOf = parsed.asOf === undefined ? 'none' : shown(parsed.asOf);
   return fault(
     'RESULT_MISMATCH',
-    `The engine returned target ${shown(parsed.target)} as of ${shown(parsed.asOf)}, which differs from the request ${expected.target} as of ${expected.asOf}, so no figure is returned. Fix: confirm the installed engine is @invaro/opentax 0.4.0 and run the command again.`
+    `The engine returned target ${returnedTarget} as of ${returnedAsOf}, which differs from the request ${expected.target} as of ${expected.asOf}, so no figure is returned. Fix: confirm the installed engine is @invaro/opentax 0.4.0 and run the command again.`
   );
 }
 
