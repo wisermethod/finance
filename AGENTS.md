@@ -58,9 +58,3 @@ These rules are decided; they bind any later design and are not open for a build
 ## Layout
 
 This root's layout is governed by `wiser/standards/plugin-root.md`. That standard's C1 owns the `layout:` stamp: the current tree version, a bare nonnegative integer. `wiser/skills/Onboard Plugin Root/` writes it last, only once every applicable obligation other than the stamp itself scores present or N/A. A stamp written before that would advertise a conformance nothing had earned, which is why an unstamped tree reads as not current rather than as clean.
-
-## Handover
-
-Stood up 2026-09-18 by `wiser/skills/Onboard Plugin Root/`. Each line is owed to a person and names what closes it. Strike a line when its boundary closes; when the last line goes, delete this section.
-
-- The archive of the placeholder this tree replaced: owed (the operator; the placeholder's `AGENTS.md` and `README.md` were copied outside this root before it was produced, and the stand-up report names exactly where. Nothing inside this root can reach them, so keeping or discarding them is a person's)
