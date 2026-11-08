@@ -8,9 +8,14 @@ Tax Engine installs `@invaro/opentax` only with the person's consent, and this r
 
 ## Install
 
-Point your harness at this repository as a plugin root, or add the repository as a marketplace and install `finance@wiser-method-finance` from its catalog.
+Install Wiser first, by its [Install steps](https://github.com/wisermethod/wiser#install): this plugin loads beside it. Then add this plugin in the same app:
 
-- **Claude Code.** Run `claude plugin marketplace add wisermethod/finance`, then `claude plugin install finance@wiser-method-finance`, with `wiser` installed beside it, and start Claude Code in your working folder.
+- **Claude Cowork.** Open Customize, then Plugins, then Add marketplace. Give it `https://github.com/wisermethod/finance`, and install `finance`. Then turn on Sync automatically for this marketplace, as Wiser's steps do for theirs.
+- **Claude Code.** Run `claude plugin marketplace add wisermethod/finance`, then `claude plugin install finance@wiser-method-finance`, and start Claude Code in your working folder.
+- **Codex.** Add `wisermethod/finance` as a marketplace and install `finance`.
+- **ChatGPT for desktop.** Add `wisermethod/finance` as a marketplace and install `finance`.
+- **Grok.** Run `grok plugin marketplace add wisermethod/finance`, then `grok plugin install finance --trust`.
+- **Cursor.** Add your clone of this repository as a workspace root beside your clone of Wiser and your working folder.
 
 Work lands in the working folder you attach, never in this repository.
 

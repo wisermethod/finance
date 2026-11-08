@@ -4,6 +4,7 @@ type: tool
 category: tax
 description: One JSON object with a federal figure from stated facts, the total tax or a quarterly estimate under the regular method, or a check of the pinned engine
 version: 0.1.0
+runs: local
 ---
 
 # Tax Engine
